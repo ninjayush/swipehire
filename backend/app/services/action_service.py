@@ -1,6 +1,6 @@
 import uuid
-from datetime import datetime
-from typing import Literal
+from datetime import datetime, timezone
+from typing import Literal, Any
 from sqlalchemy.orm import Session
 from app.models.person import Person
 from app.models.match import RecruiterAction, InterestRequest, Match
@@ -14,10 +14,12 @@ class ActionService:
         person_id: str,
         action: Literal["shortlist", "pass", "save"],
         notes: str | None = None
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
-        Records recruiter action. If action is shortlist and person is registered,
-        creates an InterestRequest. Sourced non-members never get interest requests.
+        Records recruiter action.
+        - For a registered candidate, shortlist creates a pending InterestRequest.
+        - For a Crustdata-sourced non-member, shortlist creates ONLY an internal recruiter action.
+        - No external outreach, emails, or webhooks are sent to real people.
         """
         person = db.query(Person).filter(Person.id == person_id).first()
         if not person:
@@ -38,24 +40,27 @@ class ActionService:
 
         interest_request_id = None
         # Only create InterestRequest if candidate is registered and action is shortlist
-        if action == "shortlist" and person.membership_status == "registered":
-            # Check existing interest request
-            existing_ir = db.query(InterestRequest).filter(
-                InterestRequest.job_id == job_id,
-                InterestRequest.person_id == person_id
-            ).first()
-            if not existing_ir:
-                ir = InterestRequest(
-                    job_id=job_id,
-                    person_id=person_id,
-                    status="pending"
-                )
-                db.add(ir)
-                db.commit()
-                db.refresh(ir)
-                interest_request_id = ir.id
+        if action == "shortlist":
+            if person.membership_status == "registered":
+                existing_ir = db.query(InterestRequest).filter(
+                    InterestRequest.job_id == job_id,
+                    InterestRequest.person_id == person_id
+                ).first()
+                if not existing_ir:
+                    ir = InterestRequest(
+                        job_id=job_id,
+                        person_id=person_id,
+                        status="pending"
+                    )
+                    db.add(ir)
+                    db.commit()
+                    db.refresh(ir)
+                    interest_request_id = ir.id
+                else:
+                    interest_request_id = existing_ir.id
             else:
-                interest_request_id = existing_ir.id
+                # Sourced non-member: internal-only action, no InterestRequest created
+                db.commit()
         else:
             db.commit()
 
@@ -72,21 +77,26 @@ class ActionService:
         db: Session,
         interest_id: str,
         response: Literal["accept", "reject"]
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         Candidate responds to recruiter interest request.
         A Match is created ONLY when a registered candidate accepts.
+        Idempotent: Repeated accept requests return the existing match without creating duplicates.
         """
         ir = db.query(InterestRequest).filter(InterestRequest.id == interest_id).first()
         if not ir:
             raise ValueError(f"Interest request {interest_id} not found")
 
+        person = db.query(Person).filter(Person.id == ir.person_id).first()
+        if not person or person.membership_status != "registered":
+            raise PermissionError("Sourced non-members cannot receive or respond to interest requests.")
+
         ir.status = "accepted" if response == "accept" else "rejected"
-        ir.responded_at = datetime.utcnow()
+        ir.responded_at = datetime.now(timezone.utc)
 
         match_id = None
         if response == "accept":
-            # Check if match already exists
+            # Idempotency check: if match already exists, return it without duplicate row
             existing_match = db.query(Match).filter(
                 Match.job_id == ir.job_id,
                 Match.person_id == ir.person_id
@@ -113,3 +123,22 @@ class ActionService:
             "response": response,
             "match_id": match_id
         }
+
+    @staticmethod
+    def sanitize_candidate_profile_for_viewer(profile_dict: dict[str, Any]) -> dict[str, Any]:
+        """
+        Enforces candidate privacy:
+        If candidate_preferences.salary_visible is False, masks salary and compensation fields.
+        """
+        sanitized = dict(profile_dict)
+        prefs = sanitized.get("candidate_preferences")
+        if isinstance(prefs, dict):
+            salary_visible = prefs.get("salary_visible", True)
+            if not salary_visible:
+                sanitized_prefs = dict(prefs)
+                sanitized_prefs.pop("expected_salary", None)
+                sanitized_prefs.pop("salary", None)
+                sanitized_prefs.pop("current_salary", None)
+                sanitized_prefs["salary_visible"] = False
+                sanitized["candidate_preferences"] = sanitized_prefs
+        return sanitized

@@ -25,6 +25,8 @@ def respond_interest(id: str, req: InterestRespondRequest, db: Session = Depends
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error(f"Error responding to interest: {e}")
         raise HTTPException(status_code=400, detail=str(e))

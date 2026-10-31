@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from sqlalchemy.orm import Session
 from app.models.company import Company, CompanyMember
@@ -111,9 +111,16 @@ class CompanyService:
 
         # Add data provenance metadata
         enriched_data["_source"] = "crustdata"
-        enriched_data["_retrieved_at"] = datetime.utcnow().isoformat()
+        enriched_data["_retrieved_at"] = datetime.now(timezone.utc).isoformat()
         if clean_domain:
             enriched_data["_searched_domain"] = clean_domain
+
+        # Check if company already exists by canonical Crustdata ID or matched domain
+        if not existing:
+            if crustdata_id and str(crustdata_id).isdigit():
+                existing = db.query(Company).filter(Company.crustdata_company_id == int(crustdata_id)).first()
+            if not existing and matched_domain:
+                existing = db.query(Company).filter(Company.domain == matched_domain).first()
 
         # Upsert Company by canonical Crustdata identity/domain
         if not existing:
@@ -122,7 +129,7 @@ class CompanyService:
                 id=company_id,
                 crustdata_company_id=int(crustdata_id) if (crustdata_id and str(crustdata_id).isdigit()) else None,
                 domain=matched_domain,
-                name=matched_name,
+                name=clean_name or matched_name,
                 enriched_data=enriched_data
             )
             db.add(new_company)
