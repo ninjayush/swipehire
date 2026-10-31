@@ -11,19 +11,31 @@ const W = Dimensions.get("window").width;
 const THRESH = W * 0.3;
 type Act = "shortlist" | "pass" | "save";
 
-export function SwipeDeck({ cards, onAct, empty }: { cards: DeckCard[]; onAct: (c: DeckCard, a: Act) => void; empty: React.ReactNode }) {
+export function SwipeDeck({ cards, onAct, empty }: { cards: DeckCard[]; onAct: (c: DeckCard, a: Act) => Promise<void> | void; empty: React.ReactNode }) {
   const [i, setI] = useState(0);
   const pos = useRef(new Animated.ValueXY()).current;
   const card = cards[i];
   const cardRef = useRef(card); cardRef.current = card;
 
+  const [err, setErr] = useState<string | null>(null);
+  const busy = useRef(false);
   const fly = useCallback((a: Act) => {
+    if (busy.current) return;
+    busy.current = true; setErr(null);
+    // Commit the action to the backend first; if it fails the card stays put.
+    Promise.resolve(onAct(cardRef.current, a)).then(() => animate(a)).catch((e) => {
+      busy.current = false; setErr(e instanceof Error ? e.message : "Action failed");
+      Animated.spring(pos, { toValue: { x: 0, y: 0 }, useNativeDriver: false }).start();
+    });
+  }, [onAct, pos]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const animate = (a: Act) => {
     const target = a === "shortlist" ? { x: W * 1.3, y: 0 } : a === "pass" ? { x: -W * 1.3, y: 0 } : { x: 0, y: 800 };
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     Animated.timing(pos, { toValue: target, duration: 220, useNativeDriver: false }).start(() => {
-      onAct(cardRef.current, a); pos.setValue({ x: 0, y: 0 }); setI((n) => n + 1);
+      pos.setValue({ x: 0, y: 0 }); setI((n) => n + 1); busy.current = false;
     });
-  }, [onAct, pos]);
+  };
 
   const pan = useMemo(() => PanResponder.create({
     // only claim clearly-horizontal drags so vertical scrolling of the profile still works
@@ -60,6 +72,7 @@ export function SwipeDeck({ cards, onAct, empty }: { cards: DeckCard[]; onAct: (
           <Round label={member ? "Express interest" : "Shortlist (internal only)"} onPress={() => fly("shortlist")} gradientBg><Heart /></Round>
         </View>
       </View>
+      {err && <Text style={[s.note, { color: c.red }]} accessibilityRole="alert">{err}</Text>}
       <Text style={s.note}>{member ? "Interest sends an in-app request they can accept or decline." : "Not on platform — internal shortlist only. Nobody is contacted."}</Text>
     </View>
   );
