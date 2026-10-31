@@ -302,6 +302,13 @@ class PersonService:
 
         if person_id:
             person = db.query(Person).filter(Person.id == person_id).first()
+        if not person and email:
+            clean_email = email.strip().lower()
+            existing_user = db.query(User).filter(User.email.ilike(clean_email)).first()
+            if existing_user:
+                existing_profile = db.query(CandidateProfile).filter(CandidateProfile.user_id == existing_user.id).first()
+                if existing_profile and existing_profile.person_id:
+                    person = db.query(Person).filter(Person.id == existing_profile.person_id).first()
         if not person and norm_url:
             person = db.query(Person).filter(Person.profile_url == norm_url).first()
 
@@ -337,8 +344,10 @@ class PersonService:
             db.commit()
             db.refresh(user)
 
-        # Create or update CandidateProfile
-        profile = db.query(CandidateProfile).filter(CandidateProfile.person_id == person.id).first()
+        # Create or update CandidateProfile (query by person_id or user_id to prevent duplicate user_id conflict)
+        profile = db.query(CandidateProfile).filter(
+            (CandidateProfile.person_id == person.id) | (CandidateProfile.user_id == user.id)
+        ).first()
         if not profile:
             profile = CandidateProfile(
                 user_id=user.id,
@@ -347,8 +356,10 @@ class PersonService:
             )
             db.add(profile)
         else:
+            profile.person_id = person.id
+            profile.user_id = user.id
             if preferences:
-                profile.preferences = {**profile.preferences, **preferences}
+                profile.preferences = {**(profile.preferences or {}), **preferences}
         db.commit()
 
         # Update normalized profile JSON

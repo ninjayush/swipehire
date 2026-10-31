@@ -118,8 +118,23 @@ class DiscoveryService:
                 record_dict = dict(p.profile_data or {})
                 record_dict["person_id"] = p.id
                 record_dict["membership_status"] = p.membership_status
-                record = PersonRecord(**record_dict)
-                candidates_by_id[p.id] = record
+                origin_val = p.origin or record_dict.get("origin")
+                record_dict["origin"] = origin_val if origin_val in ["registered", "crustdata_sourced"] else "registered"
+                if p.name and not record_dict.get("name"):
+                    record_dict["name"] = p.name
+                if p.current_title and not record_dict.get("current_title"):
+                    record_dict["current_title"] = p.current_title
+                if p.current_company and not record_dict.get("current_company"):
+                    record_dict["current_company"] = p.current_company
+                if p.location and not record_dict.get("location"):
+                    record_dict["location"] = p.location
+                if p.profile_url and not record_dict.get("profile_url"):
+                    record_dict["profile_url"] = p.profile_url
+                try:
+                    record = PersonRecord(**record_dict)
+                    candidates_by_id[p.id] = record
+                except Exception as e:
+                    logger.warning(f"Could not construct PersonRecord for {p.id}: {e}")
 
             # 3. Query Crustdata search (bounded limit, search query from title and must-have skills)
             search_query: dict[str, Any] = {}
