@@ -8,8 +8,8 @@ from pydantic import BaseModel, Field
 class JobRequirements(BaseModel):
     title: str
     seniority: str | None = None
-    min_experience_years: float | None = None
-    max_experience_years: float | None = None
+    min_experience_years: float | None = Field(default=None, ge=0.0)
+    max_experience_years: float | None = Field(default=None, ge=0.0)
     locations: list[str] = Field(default_factory=list)
     work_modes: list[str] = Field(default_factory=list)       # e.g. onsite, hybrid, remote
     must_have_skills: list[str] = Field(default_factory=list)
@@ -34,7 +34,7 @@ class PersonRecord(BaseModel):
     current_company: str | None = None
     location: str | None = None
     skills: list[str] = Field(default_factory=list)
-    experience_years: float | None = None
+    experience_years: float | None = Field(default=None, ge=0.0)
     employment_history: list[dict[str, Any]] = Field(default_factory=list)
     education: list[dict[str, Any]] = Field(default_factory=list)
     resume_highlights: list[dict[str, Any]] = Field(default_factory=list)
@@ -42,27 +42,37 @@ class PersonRecord(BaseModel):
     source_metadata: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class EvidenceItem(BaseModel):
+    id: str | None = None
+    candidate_match_id: str | None = None
+    criterion: str
+    evidence_text: str
+    source_type: Literal["resume", "crustdata_profile", "user_input"] = "crustdata_profile"
+    confidence_score: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
 class CandidateEvaluation(BaseModel):
     person_id: str
     eligible: bool
     exclusion_reasons: list[str] = Field(default_factory=list)
-    fit_score: float | None = None
+    fit_score: float | None = Field(default=None, ge=0.0, le=100.0)
     component_scores: dict[str, float] = Field(default_factory=dict)
-    evidence_coverage: float | None = None
+    evidence_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
     fit_type: Literal["direct", "adjacent"] | None = None
     match_explanation: str | None = None
     reasons: list[str] = Field(default_factory=list)
-    rank: int | None = None
+    rank: int | None = Field(default=None, ge=1)
+    evidence: list[EvidenceItem] = Field(default_factory=list)
 
 
 class CandidateDeckResponse(BaseModel):
     job_id: str
     match_run_id: str
     status: Literal["completed", "failed", "processing"]
-    total_candidates: int
-    direct_count: int
-    adjacent_count: int
-    excluded_count: int
+    total_candidates: int = Field(default=0, ge=0)
+    direct_count: int = Field(default=0, ge=0)
+    adjacent_count: int = Field(default=0, ge=0)
+    excluded_count: int = Field(default=0, ge=0)
     cards: list[dict[str, Any]] = Field(default_factory=list)  # serialized PersonRecord + CandidateEvaluation
 
 
