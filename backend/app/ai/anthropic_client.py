@@ -24,7 +24,7 @@ from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ANTHROPIC_MODEL = "claude-3-5-sonnet-20241022"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
 T = TypeVar("T", bound=BaseModel)
@@ -77,10 +77,14 @@ def _resolve_config(key: str, default: str | None = None) -> str | None:
     try:
         from app import config
 
-        if hasattr(config, "settings") and hasattr(config.settings, key.lower()):
-            val = getattr(config.settings, key.lower())
-            if val is not None:
-                return str(val)
+        # Settings fields are upper-case (e.g. ANTHROPIC_API_KEY) and also pick up values
+        # from .env, which is NOT exported to os.environ. Empty values fall through.
+        settings = getattr(config, "settings", None)
+        if settings is not None:
+            for attr in (key, key.lower()):
+                val = getattr(settings, attr, None)
+                if val is not None and str(val) != "":
+                    return str(val)
     except Exception:
         pass
     return os.environ.get(key, default)

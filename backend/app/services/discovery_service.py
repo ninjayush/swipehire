@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 import inspect
 import logging
@@ -148,7 +149,11 @@ class DiscoveryService:
                     query=search_query,
                     limit=20
                 )
-                items = search_result.data.get("profiles") or search_result.data.get("data") or search_result.data.get("results") or []
+                payload = search_result.data
+                if isinstance(payload, dict):
+                    items = payload.get("profiles") or payload.get("data") or payload.get("results") or []
+                else:
+                    items = payload or []
                 if isinstance(items, list):
                     for item in items:
                         if isinstance(item, dict):
@@ -167,7 +172,10 @@ class DiscoveryService:
             if inspect.iscoroutinefunction(deck_builder):
                 displayed_evals, excluded_evals = await deck_builder(requirements, all_candidates, deck_size=20)
             else:
-                displayed_evals, excluded_evals = deck_builder(requirements, all_candidates, deck_size=20)
+                # Sync builder may call Claude for explanations; keep it off the event loop.
+                displayed_evals, excluded_evals = await asyncio.to_thread(
+                    deck_builder, requirements, all_candidates, deck_size=20
+                )
 
             direct_count = sum(1 for e in displayed_evals if e.fit_type == "direct")
             adjacent_count = sum(1 for e in displayed_evals if e.fit_type == "adjacent")
