@@ -116,6 +116,11 @@ class JobResponse(BaseModel):
     requirements: JobRequirements
     status: str
 
+class JobUpdateRequest(BaseModel):
+    title: str | None = None
+    status: str | None = None
+    requirements: dict[str, Any] | JobRequirements | None = None
+
 class RecruiterActionRequest(BaseModel):
     person_id: str
     action: Literal["shortlist", "pass", "save"]

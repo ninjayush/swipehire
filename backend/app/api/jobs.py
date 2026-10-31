@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.database.db import get_db
 from app.database.schemas import (
     JobCreateRequest,
+    JobUpdateRequest,
     JobResponse,
     JobRequirements,
     CandidateDeckResponse,
@@ -52,6 +53,7 @@ def create_job(req: JobCreateRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="raw_jd must be provided for input_type 'jd'")
         parser = get_person_2_jd_parser()
         requirements = parser(req.raw_jd)
+        status = "needs_confirmation"
     else:
         if not req.requirements:
             raise HTTPException(status_code=400, detail="requirements must be provided for input_type 'structured'")
@@ -59,13 +61,14 @@ def create_job(req: JobCreateRequest, db: Session = Depends(get_db)):
             requirements = req.requirements
         else:
             requirements = JobRequirements(**req.requirements)
+        status = "active"
 
     job_id = str(uuid.uuid4())
     job = JobRole(
         id=job_id,
         company_id=req.company_id,
         title=requirements.title,
-        status="active",
+        status=status,
         raw_jd=req.raw_jd,
         requirements=requirements.model_dump()
     )
@@ -106,11 +109,57 @@ def list_jobs(company_id: str | None = None, db: Session = Depends(get_db)):
     }
 
 # -------------------------------------------------------------
+# PATCH /api/jobs/{id}
+# -------------------------------------------------------------
+@router.patch("/{id}", response_model=JobResponse)
+def update_job(id: str, req: JobUpdateRequest, db: Session = Depends(get_db)):
+    """Recruiter confirmation or edits for a job description."""
+    job = db.query(JobRole).filter(JobRole.id == id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {id} not found")
+
+    if req.title:
+        job.title = req.title
+
+    if req.status:
+        job.status = req.status
+
+    if req.requirements is not None:
+        if isinstance(req.requirements, JobRequirements):
+            req_dict = req.requirements.model_dump()
+        else:
+            req_dict = dict(req.requirements)
+        # Merge with existing
+        merged = {**job.requirements, **req_dict}
+        job.requirements = merged
+        if not req.title and "title" in merged:
+            job.title = merged["title"]
+
+    db.commit()
+    db.refresh(job)
+
+    return JobResponse(
+        job_id=job.id,
+        company_id=job.company_id,
+        requirements=JobRequirements(**job.requirements),
+        status=job.status
+    )
+
+# -------------------------------------------------------------
 # POST /api/jobs/{id}/discover
 # -------------------------------------------------------------
 @router.post("/{id}/discover", response_model=CandidateDeckResponse)
 async def discover_candidates(id: str, db: Session = Depends(get_db)):
     """Trigger candidate discovery and scoring pipeline."""
+    job = db.query(JobRole).filter(JobRole.id == id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {id} not found")
+
+    # If job was in needs_confirmation, confirm it on discovery trigger
+    if job.status == "needs_confirmation":
+        job.status = "active"
+        db.commit()
+
     try:
         return await DiscoveryService.run_discovery_and_matching(db, id)
     except ValueError as e:
