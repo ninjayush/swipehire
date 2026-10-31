@@ -72,16 +72,17 @@ def test_deck_builder_invalid_deck_size() -> None:
         build_candidate_deck(requirements=req, candidates=[], deck_size=0)
 
 
-def test_deck_builder_scaffolding_contract() -> None:
-    """Verify build_candidate_deck raises NotImplementedError rather than returning fake candidate evaluations."""
+def test_deck_builder_contract() -> None:
+    """Verify build_candidate_deck returns displayed and excluded candidate evaluations."""
     req = JobRequirements(title="Synthetic Role")
     person = PersonRecord(
         person_id="p-001",
         origin="registered",
         membership_status="registered",
     )
-    with pytest.raises(NotImplementedError):
-        build_candidate_deck(requirements=req, candidates=[person])
+    displayed, excluded = build_candidate_deck(requirements=req, candidates=[person])
+    assert isinstance(displayed, list)
+    assert isinstance(excluded, list)
 
 
 def test_filter_and_score_contracts() -> None:

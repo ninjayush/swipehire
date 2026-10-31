@@ -26,8 +26,9 @@ DEFAULT_DIRECT_MIN_SCORE: float = 70.0
 DEFAULT_ADJACENT_MIN_SCORE: float = 50.0
 
 MIN_DIRECT_SKILLS_SCORE: float = 60.0
-MIN_DIRECT_ROLE_DOMAIN_SCORE: float = 50.0
+MIN_DIRECT_ROLE_DOMAIN_SCORE: float = 70.0  # Requires strong/exact title match for Direct Fit
 MIN_ADJACENT_TRANSFERABLE_SKILLS: float = 40.0
+MIN_ADJACENT_ROLE_DOMAIN_SCORE: float = 35.0  # Minimum domain relevance for Adjacent Fit
 
 
 def classify_fit_type(
@@ -63,14 +64,17 @@ def classify_fit_type(
         return FIT_TYPE_DIRECT
 
     # 2. Adjacent Fit Criteria
-    # Must meet adjacent minimum score, have transferable skills or experience,
-    # but miss literal title alignment or some preferred skills.
-    if fit_score >= DEFAULT_ADJACENT_MIN_SCORE:
+    # Must meet adjacent minimum score, have minimum domain relevance,
+    # and transferable skills or experience, while having a gap in preferred criteria or title.
+    if (
+        fit_score >= DEFAULT_ADJACENT_MIN_SCORE
+        and domain_score >= MIN_ADJACENT_ROLE_DOMAIN_SCORE
+    ):
         has_transferable_capability = (
             skills_score >= MIN_ADJACENT_TRANSFERABLE_SKILLS or exp_score >= 50.0
         )
         has_criteria_gap = (
-            domain_score < 80.0
+            domain_score < MIN_DIRECT_ROLE_DOMAIN_SCORE
             or skills_score < 75.0
             or bool(requirements.preferred_skills)
         )
@@ -78,5 +82,5 @@ def classify_fit_type(
         if has_transferable_capability and has_criteria_gap:
             return FIT_TYPE_ADJACENT
 
-    # 3. Insufficient evidence or weak fit -> None
+    # 3. Insufficient evidence or weak/unrelated fit -> None
     return None

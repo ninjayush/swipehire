@@ -191,10 +191,10 @@ def score_candidate(
         else:
             overlap = calculate_token_overlap(norm_req_t, norm_cand_t)
             if overlap >= 0.5:
-                role_domain_score = 85.0 + 15.0 * overlap
+                role_domain_score = 75.0 + 25.0 * overlap
                 reasons.append(f"Role/Domain: Strong title keyword alignment ({cand_title}).")
             elif overlap >= 0.2:
-                role_domain_score = 65.0 + 20.0 * overlap
+                role_domain_score = 50.0 + 25.0 * overlap
                 reasons.append(f"Role/Domain: Moderate domain alignment ({cand_title}).")
             else:
                 # Check for core functional words (engineer, developer, architect, analyst)
@@ -202,10 +202,10 @@ def score_candidate(
                 t1_core = set(norm_req_t.split()).intersection(core_words)
                 t2_core = set(norm_cand_t.split()).intersection(core_words)
                 if t1_core and t1_core == t2_core:
-                    role_domain_score = 55.0
+                    role_domain_score = 50.0
                     reasons.append(f"Role/Domain: Adjacent functional alignment ({cand_title}).")
                 else:
-                    role_domain_score = 30.0
+                    role_domain_score = 10.0
                     reasons.append(f"Role/Domain: Distinct role title ({cand_title}).")
 
     role_domain_score = _clamp(role_domain_score)

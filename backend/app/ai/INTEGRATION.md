@@ -1,8 +1,10 @@
-# Person 2 — AI & Matching Integration Note
+# Person 2 — AI & Matching Integration Note & Final Handoff
 
-This document specifies the integration boundary, shared contracts, and public API signatures implemented by Person 2 (`backend/app/ai/` and `backend/app/matching/`).
+This document is the definitive integration specification and handoff guide for Person 2's workstream (`backend/app/ai/` and `backend/app/matching/`). Person 1 (Backend/Orchestration) and Person 3 (Frontend) can use this guide to integrate all parsing, scoring, deck assembly, and explanation services.
 
-## 1. Ownership Boundary
+---
+
+## 1. Ownership & Package Boundary
 
 - **Person 2 owns:**
   - `backend/app/ai/`
@@ -11,169 +13,86 @@ This document specifies the integration boundary, shared contracts, and public A
   - `backend/tests/matching/`
   - `backend/app/ai/INTEGRATION.md`
 - **Person 1 owns:**
-  - `backend/app/api/`
-  - `backend/app/integrations/`
-  - `backend/app/models/`
-  - `backend/app/database/` (including canonical `schemas.py`)
-  - `backend/app/main.py`, `backend/app/config.py`, `.env.example`, `requirements.txt`
+  - `backend/app/api/` (routes)
+  - `backend/app/integrations/` (Crustdata adapter)
+  - `backend/app/models/` (database models)
+  - `backend/app/database/schemas.py` (canonical shared Pydantic contracts)
+  - Backend orchestration, persistence, `config.py`, and `requirements.txt`
 - **Person 3 owns:**
   - `frontend/`
 
-## 2. Shared Contracts Consumed
+---
 
-Person 2 imports canonical Pydantic models from `app.database.schemas` (never duplicates or modifies them):
+## 2. Public API Signatures & Calling Convention
 
-- `JobRequirements`: Title, experience bounds, locations, work modes, must-have/preferred skills, mandatory/preferred qualifications, dealbreakers, unknown requirements, and raw JD.
-- `PersonRecord`: Normalized candidate data from both registered members and Crustdata-sourced professionals.
-- `CandidateEvaluation`: Eligibility, exclusion reasons, numeric fit score, component scores, evidence coverage, fit type (`direct` | `adjacent`), explanation, and rank.
-
-## 3. Required Public Functions
-
-All public functions are synchronous and conform strictly to the agreed signatures:
+All three public functions are strictly **synchronous** and can be called directly without asynchronous coroutine wrappers or event loops:
 
 ```python
-# 1. Job Description Parsing (Claude)
-from app.ai.jd_parser import parse_job_description
+# 1. Job Description Parsing (Claude Messages API with untrusted guardrails)
+from app.ai import parse_job_description
+# or: from app.ai.jd_parser import parse_job_description
+def parse_job_description(raw_jd: str) -> JobRequirements: ...
 
-def parse_job_description(raw_jd: str) -> JobRequirements:
-    ...
+# 2. Resume Plain-Text Structuring (Claude with provenance tags)
+from app.ai import parse_resume_text
+# or: from app.ai.resume_parser import parse_resume_text
+def parse_resume_text(resume_text: str) -> dict[str, Any]: ...
 
-# 2. Resume Text Structuring (Claude)
-from app.ai.resume_parser import parse_resume_text
-
-def parse_resume_text(resume_text: str) -> dict:
-    ...
-
-# 3. Dynamic Deck Assembly (Deterministic Matching)
-from app.matching.deck import build_candidate_deck
-
+# 3. Dynamic Candidate Deck Assembly (Pure deterministic matching + explanations)
+from app.matching import build_candidate_deck
+# or: from app.matching.deck import build_candidate_deck
 def build_candidate_deck(
     requirements: JobRequirements,
     candidates: list[PersonRecord],
     deck_size: int = 20,
-) -> tuple[list[CandidateEvaluation], list[CandidateEvaluation]]:
-    ...
+) -> tuple[list[CandidateEvaluation], list[CandidateEvaluation]]: ...
 ```
 
-## 4. Architectural Separation
+---
 
-1. **Language tasks (Claude via Anthropic Messages API):**
-   - Untrusted JD parsing and extraction into structured criteria.
-   - Untrusted resume plain text structuring into projects, skills, metrics.
-   - Natural language match explanation grounded strictly in verified evaluation metrics.
-2. **Deterministic matching (Pure Python):**
-   - Hard filter evaluation: Mandatory criteria fail closed; missing optional data remains unknown.
-   - Fit scoring: 5 weighted components (Skills 30%, Experience 25%, Domain 20%, Trajectory 15%, Context 10%).
-   - Direct vs. adjacent classification: Adjacent candidates must pass ALL hard filters; may miss preferred criteria only.
-   - Deck allocation: Capped at maximum 20% adjacent candidates (max 4 in a 20-card deck). No filler.
+## 3. Dependency & Configuration Requirements for Person 1
 
-## 5. Claude Client & Configuration Specification (Prompt 2 Deliverable)
-
-### Dependency Required from Person 1
-Person 1 owns `requirements.txt`. Please ensure the following dependency is listed:
+### Required Dependency
+Add the following to `backend/requirements.txt`:
 ```text
 anthropic>=0.40.0
 ```
 
-### Environment / Settings Variables
+### Environment Variables
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | *None* | Anthropic API authentication key. |
-| `ANTHROPIC_MODEL` | No | `claude-3-5-sonnet-20241022` | Claude model name for structured extraction and explanations. |
+| `ANTHROPIC_API_KEY` | Yes (for AI parsing) | *None* | Authentication key for Claude Messages API. |
+| `ANTHROPIC_MODEL` | No | `claude-3-5-sonnet-20241022` | Configurable model for JD/resume parsing and explanation polishing. |
 | `ANTHROPIC_TIMEOUT` | No | `30.0` | Finite timeout (seconds) for synchronous API requests. |
 
-### Error Hierarchy (`app.ai.anthropic_client`)
-- `AIError`: Root exception for all AI operations.
-  - `AIConfigurationError`: Missing API key or configuration.
-  - `AIAuthenticationError`: 401/403 credentials failure (non-retryable).
-  - `AIRateLimitError`: 429 rate limit exceeded.
-  - `AITimeoutError`: Finite timeout exceeded.
-  - `AIConnectionError`: Network/transport connection error.
-  - `AIServerError`: 5xx upstream service outage or overload.
-  - `AIParsingError`: Payload validation failure after at most 1 repair attempt.
+*Note: If `ANTHROPIC_API_KEY` is not configured, `build_candidate_deck` will still function 100% deterministically using the built-in evidence-grounded template fallback.*
 
-### Bounded Repair & Prompt Safety
-- Documents are explicitly guarded as **untrusted data**. Prompts enforce prompt-injection immunity.
-- Primary extraction uses Anthropic Tool Use / JSON Schema.
-- If primary output is malformed, exactly **one** repair attempt is executed including the validation diagnostics.
-- If repair fails, an `AIParsingError` is raised with a concise diagnostic. No infinite loops or unredacted credential leaks.
+---
 
-## 6. Job Description Parser Specification (Prompt 3 Deliverable)
+## 4. Job Description Parser Behavior (`parse_job_description`)
 
-### Public Signature
-```python
-from app.ai.jd_parser import parse_job_description
-from app.database.schemas import JobRequirements
+- **Strict Categorization**:
+  - `must_have_skills`: Only explicitly compulsory, required, or non-negotiable skills.
+  - `preferred_skills`: Nice-to-have, bonus, or preferred skills. Any accidental overlap with must-have skills is automatically pruned from preferred.
+  - `mandatory_qualifications`: Compulsory degrees or certifications.
+  - `preferred_qualifications`: Desired or bonus credentials.
+  - `dealbreakers`: Explicit geographic, authorization, or work mode mandates.
+  - `required_fields`: Candidate profile fields explicitly demanded for eligibility by the JD (e.g., notice period, portfolio).
+- **Ambiguity Surfacing**:
+  - Vague soft skills ("strong communication", "rockstar attitude") and contradictory requirements ("junior title with 8 years experience") are placed in `unknown_or_needs_confirmation`. They are **never** silently promoted to hard filters.
+- **Experience Bounds**:
+  - Extracted only from explicit numeric statements ("5+ years" $\to$ min 5.0; "3–5 years" $\to$ min 3.0, max 5.0). Vague phrases like "experienced" leave bounds as `None`.
+- **Exact Raw Preservation**:
+  - `JobRequirements.raw_jd` always preserves the exact input string.
 
-job_req: JobRequirements = parse_job_description(raw_jd: str)
-```
+---
 
-### Output Semantics & Rules
-1. **Mandatory vs. Preferred Separation**:
-   - `must_have_skills` contains only explicitly compulsory skills (e.g., "Must have Python", "Required: PostgreSQL").
-   - `preferred_skills` contains nice-to-have, bonus, or preferred skills. Overlapping skills in both lists are resolved by keeping the skill in `must_have_skills` and pruning it from `preferred_skills`.
-2. **Explicit Dealbreakers & Required Candidate Fields**:
-   - `dealbreakers` records hard geographic, authorization, or work mode mandates.
-   - `required_fields` contains candidate fields (such as notice period or portfolio) only when explicitly demanded by the recruiter/JD.
-3. **Ambiguities & Surfacing**:
-   - Subjective phrases ("strong communication", "rockstar attitude") or contradictory statements ("junior role requiring 8 years") are placed in `unknown_or_needs_confirmation`. They are never converted into hard filters.
-4. **Numeric Experience Bounds**:
-   - `min_experience_years` and `max_experience_years` are parsed only when explicit numeric figures are stated. Vague phrases like "experienced" leave these fields `None`.
-5. **Exact Preservation of Raw Text**:
-   - `raw_jd` always contains the exact input text provided by the caller.
+## 5. Resume Parser Output Contract & Schema Mapping (`parse_resume_text`)
 
-### Sample Validated Output
+Returns a pure JSON-serializable Python dictionary with the following shape:
 ```json
 {
-  "title": "Senior Backend Engineer",
-  "seniority": "Senior",
-  "min_experience_years": 5.0,
-  "max_experience_years": null,
-  "locations": ["San Francisco, CA"],
-  "work_modes": ["hybrid"],
-  "must_have_skills": ["Python", "PostgreSQL", "Docker"],
-  "preferred_skills": ["Kubernetes", "GraphQL"],
-  "mandatory_qualifications": [],
-  "preferred_qualifications": [],
-  "required_fields": [],
-  "dealbreakers": [],
-  "unknown_or_needs_confirmation": [],
-  "raw_jd": "Role: Senior Backend Engineer\n..."
-}
-```
-
-## 7. Resume Parser Specification & Mapping Notes (Prompt 4 Deliverable)
-
-### Public Signature
-```python
-from app.ai.resume_parser import parse_resume_text
-
-resume_data: dict[str, Any] = parse_resume_text(resume_text: str)
-```
-
-### Output Contract
-Returns a pure JSON-serializable Python dictionary:
-- `skills`: `list[str]` (Explicitly supported technologies, deduplicated).
-- `projects`: `list[dict]` (Project name, description, technologies, and explicit metrics).
-- `achievements`: `list[str]` (Concrete awards, honors, publications).
-- `metrics`: `list[str]` (Explicit numeric metrics preserved with units and context).
-- `employment_history`: `list[dict]` (Company, title, start_date, end_date, is_current, role_type, highlights).
-- `education`: `list[dict]` (Institution, degree, field_of_study, graduation_year).
-- `summary`: `str | None` (Factual summary based strictly on resume facts).
-- `extraction_warnings`: `list[str]` (Missing dates or ambiguous details flagged for review).
-
-### Person 1 Schema Mapping Guide
-Person 1 can map this output directly into `PersonRecord` fields without schema changes:
-1. `PersonRecord.skills`: Map directly from `resume_data["skills"]`.
-2. `PersonRecord.employment_history`: Map directly from `resume_data["employment_history"]`.
-3. `PersonRecord.education`: Map directly from `resume_data["education"]`.
-4. `PersonRecord.resume_highlights`: Populate using a list containing project highlights, metrics, and achievements.
-5. `PersonRecord.source_metadata`: Append `{"source": "resume_extracted", "warnings": resume_data["extraction_warnings"]}`.
-
-### Sample Sanitized Output
-```json
-{
-  "skills": ["Go", "Python", "FastAPI", "PostgreSQL", "Docker"],
+  "skills": ["Go", "Python", "FastAPI", "Docker"],
   "projects": [
     {
       "name": "Distributed KV Store",
@@ -215,55 +134,110 @@ Person 1 can map this output directly into `PersonRecord` fields without schema 
 }
 ```
 
-## 8. Deterministic Matching Engine Specification (Prompt 5 Deliverable)
+### Mapping to `PersonRecord`
+Person 1 can map this directly into existing `PersonRecord` fields without database/schema changes:
+1. `PersonRecord.skills`: `resume_data["skills"]`
+2. `PersonRecord.employment_history`: `resume_data["employment_history"]`
+3. `PersonRecord.education`: `resume_data["education"]`
+4. `PersonRecord.resume_highlights`:
+   ```python
+   resume_highlights = (
+       [{"type": "project", "name": p["name"], "technologies": p["technologies"], "metrics": p["metrics"]} for p in resume_data["projects"]]
+       + [{"type": "metric", "content": m} for m in resume_data["metrics"]]
+       + [{"type": "achievement", "content": a} for a in resume_data["achievements"]]
+   )
+   ```
+5. `PersonRecord.source_metadata`:
+   ```python
+   {"source": "resume_extracted", "warnings": resume_data["extraction_warnings"]}
+   ```
 
-### 1. Hard-Filter Evaluation (`app.matching.filters`)
-Hard filters gate candidate eligibility. Any failed filter immediately marks `eligible = False`.
-- **Filter Evaluation Order**:
-  1. `must_have_skills` (normalized via alias dictionary)
-  2. `mandatory_qualifications` (degrees and certifications)
-  3. `min_experience_years` and `max_experience_years` (when explicitly defined)
-  4. `required_fields` (fails closed when unknown)
-  5. `dealbreakers` (location and work mode mandates)
-- **Stable Exclusion Reason Codes**:
-  - `missing_mandatory_skill: <skill>`
-  - `missing_mandatory_qualification: <qual>`
-  - `experience_below_minimum`
-  - `experience_above_maximum`
-  - `experience_unknown_required`
-  - `availability_unknown_required`
-  - `salary_unknown_required`
-  - `resume_missing_required`
-  - `location_unknown_required`
-  - `location_mismatch`
-  - `work_mode_mismatch`
-  - `<field>_unknown_required`
-- **Unknown Data Policy**:
-  - If a field is explicitly demanded in `required_fields`, missing data **fails closed**.
-  - Missing optional data (e.g. preferred skills, optional preferences) **does not exclude**.
+---
 
-### 2. Fit Scoring (`app.matching.scoring`)
-- **Formula**:
-  $$\text{fit\_score} = 0.30 \cdot \text{skills} + 0.25 \cdot \text{experience} + 0.20 \cdot \text{role\_domain} + 0.15 \cdot \text{trajectory} + 0.10 \cdot \text{context}$$
-- **Component Bounds**: Every component is normalized strictly between $0.0$ and $100.0$.
-- **Missing-Data & Evidence Policy**:
-  - When a component has no supporting evidence in the profile, its score is $0.0$.
-  - Missing component weights are **not redistributed** (preventing artificial score inflation on sparse profiles).
-  - `evidence_coverage` explicitly measures the ratio of documented dimensions ($0.0 \dots 1.0$).
+## 6. Hard-Filter Rules & Stable Reason Codes
 
-### 3. Direct vs. Adjacent Classification (`app.matching.classification`)
-- **Thresholds (Initial Engineering Defaults for Team Calibration)**:
-  - `DEFAULT_DIRECT_MIN_SCORE = 70.0`
-  - `DEFAULT_ADJACENT_MIN_SCORE = 50.0`
-  - `MIN_DIRECT_SKILLS_SCORE = 60.0`
-  - `MIN_DIRECT_ROLE_DOMAIN_SCORE = 50.0`
-  - `MIN_ADJACENT_TRANSFERABLE_SKILLS = 40.0`
-- **Direct Fit**:
-  - Passes all hard filters.
-  - $\text{fit\_score} \ge 70.0$, $\text{skills} \ge 60.0$, $\text{role\_domain} \ge 50.0$.
-- **Adjacent Fit**:
-  - Passes all hard filters (guaranteed non-negotiable).
-  - $\text{fit\_score} \ge 50.0$, demonstrates transferable capabilities ($\text{skills} \ge 40.0$ or $\text{experience} \ge 50.0$).
-  - Misses non-mandatory preferred criteria or literal title alignment.
-- **Unclassified / Weak (`None`)**:
-  - Candidates with $\text{fit\_score} < 50.0$ receive `fit_type = None` and will never be presented in the displayed deck.
+Hard filters run first in `build_candidate_deck`. Any failed hard filter immediately sets `eligible = False`, assigns `rank = None`, and routes the candidate to `excluded_evaluations`.
+
+### Filter Order & Evaluation
+1. `must_have_skills`: Evaluated using deterministic case-insensitive normalization and alias mapping.
+2. `mandatory_qualifications`: Checked against candidate education and achievements.
+3. `min_experience_years` / `max_experience_years`: Numeric check. Fails closed with `experience_unknown_required` if minimum experience is required but candidate experience is unknown.
+4. `required_fields`: Fails closed if candidate lacks the demanded field (`availability_unknown_required`, `salary_unknown_required`, `resume_missing_required`, `location_unknown_required`).
+5. `dealbreakers`: Enforces mandatory location / work-mode constraints (`location_mismatch`, `work_mode_mismatch`).
+
+### Missing Optional Data Policy
+Missing optional fields (e.g., preferred skills, unstated candidate salary preferences) **remain unknown and never cause exclusion**.
+
+---
+
+## 7. Deterministic Fit Scoring Engine
+
+Scoring evaluates eligible candidates across 5 weighted components:
+$$\text{fit\_score} = 0.30 \cdot \text{skills} + 0.25 \cdot \text{experience} + 0.20 \cdot \text{role\_domain} + 0.15 \cdot \text{trajectory} + 0.10 \cdot \text{context}$$
+
+- **Component Score Bounds**: Each component is bounded in $[0.0, 100.0]$.
+- **Anti-Inflation Policy for Sparse Profiles**:
+  - If a component has no documented evidence in the candidate profile, its score is $0.0$.
+  - Missing component weights are **not redistributed**. This ensures sparse profiles are not artificially inflated.
+- **Evidence Coverage Indicator**:
+  - `evidence_coverage` ($0.0 \dots 1.0$) measures how many of the 5 dimensions have factual backing.
+- **Explainability**: Every component appends human-readable reasons citing factual evidence.
+
+---
+
+## 8. Direct vs. Adjacent Classification & Threshold Calibration
+
+Only candidates who pass all hard filters are classified.
+
+### Engineering Default Thresholds (Subject to Team Calibration)
+| Parameter | Default | Purpose |
+|---|---|---|
+| `DEFAULT_DIRECT_MIN_SCORE` | `70.0` | Minimum `fit_score` for Direct Fit. |
+| `DEFAULT_ADJACENT_MIN_SCORE` | `50.0` | Minimum `fit_score` for Adjacent Fit. |
+| `MIN_DIRECT_SKILLS_SCORE` | `60.0` | Minimum skill score for Direct Fit. |
+| `MIN_DIRECT_ROLE_DOMAIN_SCORE` | `70.0` | Requires strong or exact title alignment for Direct Fit. |
+| `MIN_ADJACENT_TRANSFERABLE_SKILLS` | `40.0` | Demonstrates transferable competence for Adjacent Fit. |
+| `MIN_ADJACENT_ROLE_DOMAIN_SCORE` | `35.0` | Minimum functional domain relevance (excludes unrelated roles). |
+
+- **Direct Fit**: Strong alignment on title, must-have skills, and domain.
+- **Adjacent Fit**: Passes all hard filters, strong transferable capabilities, but misses preferred criteria or literal title alignment.
+- **Unclassified (`None`)**: Candidates with insufficient score ($< 50.0$) or insufficient evidence receive `fit_type = None` and are **never** included in the displayed deck (routed to `excluded_evaluations` with `exclusion_reasons = ["insufficient_fit_or_evidence"]`).
+
+---
+
+## 9. Dynamic Deck Assembly & Adjacent Cap Rules (`build_candidate_deck`)
+
+`build_candidate_deck` returns `(displayed_evaluations, excluded_evaluations)`.
+
+1. **Target Deck Size**: At most 20 cards (`min(deck_size, 20)`).
+2. **Adjacent-Fit Cap**:
+   - The adjacent share is a **strict maximum of 20% of the actual displayed deck**, and at most 4 cards in a 20-card deck:
+     $$\text{num\_adjacent} \le \min\left(4, \lfloor \text{len}(\text{displayed}) \times 0.20 \rfloor\right)$$
+   - If total displayed is 20: at most 4 adjacent.
+   - If total displayed is 15: at most 3 adjacent.
+   - If total displayed is 10: at most 2 adjacent.
+   - If total displayed is 5: at most 1 adjacent.
+   - If 0 direct candidates exist: 0 adjacent cards displayed.
+3. **No Forced Filler**: If fewer than 20 eligible, high-quality candidates exist, return only available strong candidates. Never add weak adjacent candidates as filler.
+4. **Deterministic Ranking**:
+   - Displayed cards are ordered by `(-fit_score, -evidence_coverage, person_id)`.
+   - Assigned ranks: $1, 2, \dots, N$.
+   - Excluded evaluations always have `rank = None`.
+5. **No Candidate Overlap**: A candidate appears in exactly one output list (displayed OR excluded).
+
+---
+
+## 10. Match Explanation Generation & Fallback
+
+- Every displayed card includes a grounded `match_explanation` and `reasons`.
+- **Deterministic Template Fallback**: Built-in evidence-grounded template is used automatically if Claude is unconfigured, times out, or encounters a network error.
+- **Explanation failure never breaks deck generation, scoring, or ranking.**
+
+---
+
+## 11. Known Boundaries & Non-Functional Guarantees
+
+1. **Zero External Outreach**: No real candidates are contacted.
+2. **Untrusted Data Directives**: All JD text and resume plain text are treated as untrusted data; prompt injection attempts are neutralized.
+3. **Protected Characteristics Excluded**: No age, gender, race, religion, or disability information is evaluated or stored.
+4. **No Direct Crustdata Dependency**: Person 2 does not call Crustdata APIs; Person 1 supplies normalized `PersonRecord` inputs.
