@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     CRUSTDATA_TIMEOUT_SECONDS: float = 30.0
     CRUSTDATA_MAX_RETRIES: int = 3
 
+    # Anthropic LLM Configuration (Config only, owned by Person 2)
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
+
     # Database Configuration
     DATABASE_URL: str = f"sqlite:///{BASE_DIR / 'swipehire.db'}"
 
@@ -29,6 +33,11 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = str(BASE_DIR / "uploads")
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+    ]
 
     @property
     def api_key(self) -> str:
