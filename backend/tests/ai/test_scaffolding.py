@@ -76,9 +76,10 @@ def test_resume_parser_empty_input_validation() -> None:
         parse_resume_text("   ")
 
 
-def test_resume_parser_scaffolding_contract() -> None:
-    """Verify parse_resume_text raises NotImplementedError rather than returning fake data."""
-    with pytest.raises(NotImplementedError):
+def test_resume_parser_requires_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify parse_resume_text fails with AIConfigurationError when unconfigured."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(AIConfigurationError):
         parse_resume_text("Experience: Software Developer at Synthetic Corp")
 
 

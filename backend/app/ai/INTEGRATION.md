@@ -141,3 +141,89 @@ job_req: JobRequirements = parse_job_description(raw_jd: str)
   "raw_jd": "Role: Senior Backend Engineer\n..."
 }
 ```
+
+## 7. Resume Parser Specification & Mapping Notes (Prompt 4 Deliverable)
+
+### Public Signature
+```python
+from app.ai.resume_parser import parse_resume_text
+
+resume_data: dict[str, Any] = parse_resume_text(resume_text: str)
+```
+
+### Output Contract
+Returns a pure JSON-serializable Python dictionary:
+- `skills`: `list[str]` (Explicitly supported technologies, deduplicated).
+- `projects`: `list[dict]` (Project name, description, technologies, and explicit metrics).
+- `achievements`: `list[str]` (Concrete awards, honors, publications).
+- `metrics`: `list[str]` (Explicit numeric metrics preserved with units and context).
+- `employment_history`: `list[dict]` (Company, title, start_date, end_date, is_current, role_type, highlights).
+- `education`: `list[dict]` (Institution, degree, field_of_study, graduation_year).
+- `summary`: `str | None` (Factual summary based strictly on resume facts).
+- `extraction_warnings`: `list[str]` (Missing dates or ambiguous details flagged for review).
+
+### Person 1 Schema Mapping Guide
+Person 1 can map this output directly into `PersonRecord` fields without schema changes:
+1. `PersonRecord.skills`: Map directly from `resume_data["skills"]`.
+2. `PersonRecord.employment_history`: Map directly from `resume_data["employment_history"]`.
+3. `PersonRecord.education`: Map directly from `resume_data["education"]`.
+4. `PersonRecord.resume_highlights`: Populate using a list containing project highlights, metrics, and achievements:
+   ```python
+   resume_highlights = [
+       {"type": "project", "name": p["name"], "metrics": p["metrics"]}
+       for p in resume_data["projects"]
+   ] + [
+       {"type": "metric", "content": m} for m in resume_data["metrics"]
+   ] + [
+       {"type": "achievement", "content": a} for a in resume_data["achievements"]
+   ]
+   ```
+5. `PersonRecord.source_metadata`: Append:
+   ```python
+   {"source": "resume_extracted", "warnings": resume_data["extraction_warnings"]}
+   ```
+
+### Sample Sanitized Output
+```json
+{
+  "skills": ["Go", "Python", "FastAPI", "PostgreSQL", "Docker"],
+  "projects": [
+    {
+      "name": "Distributed KV Store",
+      "description": "Implemented Raft consensus in Go from scratch",
+      "technologies": ["Go"],
+      "metrics": ["Benchmarked throughput at 100k ops/sec"],
+      "provenance": "resume_extracted"
+    }
+  ],
+  "achievements": [],
+  "metrics": [
+    "Reduced API response latency by 40% across 50M daily requests",
+    "Benchmarked throughput at 100k ops/sec"
+  ],
+  "employment_history": [
+    {
+      "company": "Synthetic Cloud Corp",
+      "title": "Staff Backend Engineer",
+      "start_date": "Jan 2022",
+      "end_date": "Present",
+      "is_current": true,
+      "role_type": "full_time",
+      "description": "Architected real-time event pipeline using Apache Kafka and Go",
+      "highlights": ["Reduced API response latency by 40% across 50M daily requests"],
+      "provenance": "resume_extracted"
+    }
+  ],
+  "education": [
+    {
+      "institution": "University of Technology",
+      "degree": "B.S.",
+      "field_of_study": "Computer Science",
+      "graduation_year": "2019",
+      "provenance": "resume_extracted"
+    }
+  ],
+  "summary": "Backend engineer specializing in distributed systems, Go, and cloud architecture.",
+  "extraction_warnings": []
+}
+```
