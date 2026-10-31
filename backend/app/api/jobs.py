@@ -52,7 +52,15 @@ def create_job(req: JobCreateRequest, db: Session = Depends(get_db)):
         if not req.raw_jd:
             raise HTTPException(status_code=400, detail="raw_jd must be provided for input_type 'jd'")
         parser = get_person_2_jd_parser()
-        requirements = parser(req.raw_jd)
+        try:
+            requirements = parser(req.raw_jd)
+        except Exception as e:
+            logger.warning(f"Person 2 JD parser unconfigured or failed: {e}. Falling back to baseline requirements.")
+            requirements = JobRequirements(
+                title="Job Role",
+                raw_jd=req.raw_jd,
+                unknown_or_needs_confirmation=["Parsed title and skills need recruiter confirmation"]
+            )
         status = "needs_confirmation"
     else:
         if not req.requirements:
