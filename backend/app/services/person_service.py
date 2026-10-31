@@ -28,35 +28,59 @@ def normalize_profile_url(url: str | None) -> str | None:
 def normalize_crustdata_person(data: dict[str, Any], origin: str = "crustdata_sourced") -> PersonRecord:
     """
     Transforms raw Crustdata person response into the canonical PersonRecord contract.
-    Handles varied key structures gracefully.
+    Handles nested live Crustdata schemas (e.g. basic_profile, matches, person_data) gracefully.
     """
+    # If wrapped in matches list
+    if "matches" in data and isinstance(data["matches"], list) and data["matches"]:
+        match_item = data["matches"][0]
+        data = match_item.get("person_data") or match_item
+
+    # If wrapped in basic_profile
+    profile = data.get("basic_profile") if isinstance(data.get("basic_profile"), dict) else data
+
     person_id = str(uuid.uuid4())
     
     # Crustdata person ID
-    crustdata_id = data.get("crustdata_person_id") or data.get("id") or data.get("person_id")
+    crustdata_id = (
+        data.get("crustdata_person_id")
+        or profile.get("crustdata_person_id")
+        or data.get("id")
+        or data.get("person_id")
+    )
     if isinstance(crustdata_id, str) and crustdata_id.isdigit():
         crustdata_id = int(crustdata_id)
     elif not isinstance(crustdata_id, int):
         crustdata_id = None
 
     # Profile URL
-    raw_url = data.get("profile_url") or data.get("linkedin_profile_url") or data.get("linkedin_url")
+    raw_url = (
+        profile.get("professional_network_profile_url")
+        or data.get("profile_url")
+        or data.get("linkedin_profile_url")
+        or data.get("linkedin_url")
+    )
     profile_url = normalize_profile_url(raw_url)
 
     # Name
-    name = data.get("name") or data.get("full_name")
+    name = profile.get("name") or data.get("name") or data.get("full_name")
     if not name:
-        first = data.get("first_name", "")
-        last = data.get("last_name", "")
+        first = profile.get("first_name", "") or data.get("first_name", "")
+        last = profile.get("last_name", "") or data.get("last_name", "")
         name = f"{first} {last}".strip() or None
 
-    headline = data.get("headline") or data.get("summary")
-    current_title = data.get("current_title") or data.get("title")
-    current_company = data.get("current_company") or data.get("company_name")
-    location = data.get("location") or data.get("city")
+    headline = profile.get("headline") or data.get("headline") or data.get("summary")
+    current_title = profile.get("current_title") or data.get("current_title") or data.get("title")
+    current_company = profile.get("current_company") or data.get("current_company") or data.get("company_name")
+    
+    # Location
+    loc_obj = profile.get("location") or data.get("location")
+    if isinstance(loc_obj, dict):
+        location = loc_obj.get("full_location") or loc_obj.get("raw") or loc_obj.get("city")
+    else:
+        location = loc_obj or data.get("city")
 
     # Skills extraction
-    raw_skills = data.get("skills", [])
+    raw_skills = profile.get("skills") or data.get("skills", [])
     skills: list[str] = []
     if isinstance(raw_skills, list):
         for s in raw_skills:
@@ -66,7 +90,7 @@ def normalize_crustdata_person(data: dict[str, Any], origin: str = "crustdata_so
                 skills.append(s["name"])
 
     # Experience years
-    exp_years = data.get("experience_years") or data.get("years_of_experience")
+    exp_years = profile.get("experience_years") or data.get("experience_years") or data.get("years_of_experience")
     if exp_years is not None:
         try:
             exp_years = float(exp_years)
@@ -74,11 +98,11 @@ def normalize_crustdata_person(data: dict[str, Any], origin: str = "crustdata_so
             exp_years = None
 
     # Employment & Education
-    employment = data.get("employment_history") or data.get("work_experience") or []
+    employment = profile.get("employment_history") or data.get("employment_history") or data.get("work_experience") or []
     if not isinstance(employment, list):
         employment = []
 
-    education = data.get("education") or []
+    education = profile.get("education") or data.get("education") or []
     if not isinstance(education, list):
         education = []
 

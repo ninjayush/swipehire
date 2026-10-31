@@ -116,7 +116,7 @@ class DiscoveryService:
 
         try:
             search_result = await crustdata_client.search_persons(query=search_query, limit=10)
-            items = search_result.get("data") or search_result.get("results") or []
+            items = search_result.get("profiles") or search_result.get("data") or search_result.get("results") or []
             if isinstance(items, list):
                 for item in items:
                     if isinstance(item, dict):

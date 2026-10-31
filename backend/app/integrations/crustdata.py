@@ -123,7 +123,7 @@ class CrustdataClient:
         if profile_url in self._person_cache:
             return self._person_cache[profile_url]
 
-        payload = {"profile_url": profile_url}
+        payload = {"professional_network_profile_urls": [profile_url]}
         result = await self._post("/person/enrich", payload)
         self._person_cache[profile_url] = result
         return result
@@ -138,10 +138,22 @@ class CrustdataClient:
         cursor: str | None = None
     ) -> dict[str, Any]:
         """Search for external candidate profiles matching query criteria."""
-        payload: dict[str, Any] = {
-            "limit": limit,
-            **(query or {})
-        }
+        payload: dict[str, Any] = {"limit": limit}
+        
+        if query:
+            if "search" in query:
+                payload["search"] = query["search"]
+            elif "query" in query:
+                payload["search"] = {"query": query["query"]}
+            elif "title" in query:
+                payload["search"] = {"query": query["title"]}
+            elif "filters" in query:
+                payload["filters"] = query["filters"]
+            else:
+                payload["search"] = {"query": "Software Engineer"}
+        else:
+            payload["search"] = {"query": "Software Engineer"}
+
         if cursor:
             payload["cursor"] = cursor
 
@@ -157,10 +169,10 @@ class CrustdataClient:
     ) -> dict[str, Any]:
         """Resolve a company name or domain to canonical identity."""
         payload: dict[str, Any] = {}
-        if company_name:
-            payload["company_name"] = company_name.strip()
         if domain:
-            payload["domain"] = domain.strip()
+            payload["domains"] = [domain.strip()]
+        elif company_name:
+            payload["names"] = [company_name.strip()]
 
         if not payload:
             raise CrustdataError("Either company_name or domain is required", status_code=400)
@@ -184,9 +196,13 @@ class CrustdataClient:
         """Enrich company details given company ID or domain."""
         payload: dict[str, Any] = {}
         if company_id:
-            payload["company_id"] = company_id
+            try:
+                cid = int(company_id)
+                payload["crustdata_company_ids"] = [cid]
+            except ValueError:
+                payload["domains"] = [str(company_id).strip()]
         elif domain:
-            payload["domain"] = domain.strip()
+            payload["domains"] = [domain.strip()]
         else:
             raise CrustdataError("Either company_id or domain is required", status_code=400)
 
@@ -207,9 +223,8 @@ class CrustdataClient:
             return {"status": "unconfigured", "error": "No CRUSTDATA_API_KEY configured."}
 
         try:
-            # Safe probe using identify for a well-known test domain
             res = await self.identify_company(domain="google.com")
-            return {"status": "connected", "sample": res}
+            return {"status": "connected", "verified": True}
         except CrustdataError as e:
             return {"status": "error", "error": str(e), "status_code": e.status_code}
         except Exception as e:

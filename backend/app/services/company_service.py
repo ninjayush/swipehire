@@ -41,23 +41,36 @@ class CompanyService:
         )
 
         # Extract identify result
-        # Can be dict with company_id or list of matches
         crustdata_id = None
         matched_domain = clean_domain
         matched_name = clean_name or "Company"
         ambiguous: list[dict[str, Any]] = []
 
-        if isinstance(identify_res, list) and len(identify_res) > 1:
-            # Ambiguous options returned
-            ambiguous = identify_res
-            first = identify_res[0]
-            crustdata_id = first.get("company_id") or first.get("id")
-            matched_name = first.get("name") or matched_name
-            matched_domain = first.get("domain") or matched_domain
+        # If top-level is list of matched_on objects (standard live Crustdata response)
+        matches_pool = []
+        if isinstance(identify_res, list) and identify_res:
+            first_entry = identify_res[0]
+            if isinstance(first_entry, dict) and "matches" in first_entry:
+                matches_pool = first_entry.get("matches", [])
+            else:
+                matches_pool = identify_res
         elif isinstance(identify_res, dict):
-            crustdata_id = identify_res.get("company_id") or identify_res.get("id")
-            matched_name = identify_res.get("company_name") or identify_res.get("name") or matched_name
-            matched_domain = identify_res.get("domain") or matched_domain
+            if "matches" in identify_res:
+                matches_pool = identify_res.get("matches", [])
+            else:
+                matches_pool = [identify_res]
+
+        if len(matches_pool) > 1:
+            ambiguous = matches_pool
+
+        if matches_pool:
+            first_match = matches_pool[0]
+            comp_data = first_match.get("company_data") or first_match
+            basic_info = comp_data.get("basic_info") or comp_data
+            
+            crustdata_id = comp_data.get("crustdata_company_id") or basic_info.get("crustdata_company_id") or first_match.get("id")
+            matched_name = basic_info.get("name") or comp_data.get("name") or matched_name
+            matched_domain = basic_info.get("primary_domain") or comp_data.get("domain") or matched_domain
 
         # Enrich company if crustdata_id or domain is present
         enriched_data = {}
