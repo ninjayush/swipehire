@@ -1,5 +1,7 @@
 import re
 import uuid
+import logging
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 from sqlalchemy.orm import Session
@@ -8,27 +10,44 @@ from app.models.user import User, CandidateProfile
 from app.database.schemas import PersonRecord
 from app.integrations.crustdata import crustdata_client, CrustdataError
 
+logger = logging.getLogger("person_service")
+
+VALID_PROFILE_DOMAINS = {"linkedin.com", "github.com", "twitter.com", "x.com"}
+
 def normalize_profile_url(url: str | None) -> str | None:
-    """Normalize professional profile URLs for consistent deduplication."""
+    """
+    Validate and normalize professional profile URLs.
+    Rejects malformed or unsupported URLs.
+    """
     if not url:
         return None
     url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
     parsed = urlparse(url)
     if not parsed.netloc:
-        return url.lower().rstrip("/")
-    
-    scheme = parsed.scheme.lower() or "https"
+        raise ValueError(f"Invalid URL structure: {url}")
+
+    scheme = parsed.scheme.lower()
     netloc = parsed.netloc.lower()
     if netloc.startswith("www."):
         netloc = netloc[4:]
-    
+
+    # Check that domain is recognized or has valid TLD
+    domain_match = any(netloc == d or netloc.endswith("." + d) for d in VALID_PROFILE_DOMAINS)
+    if not domain_match and "." not in netloc:
+        raise ValueError(f"Unsupported profile URL domain: {netloc}")
+
     path = parsed.path.lower().rstrip("/")
     return urlunparse((scheme, netloc, path, "", "", ""))
+
 
 def normalize_crustdata_person(data: dict[str, Any], origin: str = "crustdata_sourced") -> PersonRecord:
     """
     Transforms raw Crustdata person response into the canonical PersonRecord contract.
     Handles nested live Crustdata schemas (e.g. basic_profile, matches, person_data) gracefully.
+    Preserves data provenance and explicit non-member registration status.
     """
     # If wrapped in matches list
     if "matches" in data and isinstance(data["matches"], list) and data["matches"]:
@@ -59,7 +78,12 @@ def normalize_crustdata_person(data: dict[str, Any], origin: str = "crustdata_so
         or data.get("linkedin_profile_url")
         or data.get("linkedin_url")
     )
-    profile_url = normalize_profile_url(raw_url)
+    profile_url = None
+    if raw_url:
+        try:
+            profile_url = normalize_profile_url(raw_url)
+        except ValueError:
+            profile_url = str(raw_url).strip().rstrip("/")
 
     # Name
     name = profile.get("name") or data.get("name") or data.get("full_name")
@@ -93,7 +117,7 @@ def normalize_crustdata_person(data: dict[str, Any], origin: str = "crustdata_so
     exp_years = profile.get("experience_years") or data.get("experience_years") or data.get("years_of_experience")
     if exp_years is not None:
         try:
-            exp_years = float(exp_years)
+            exp_years = max(0.0, float(exp_years))
         except (ValueError, TypeError):
             exp_years = None
 
@@ -105,6 +129,17 @@ def normalize_crustdata_person(data: dict[str, Any], origin: str = "crustdata_so
     education = profile.get("education") or data.get("education") or []
     if not isinstance(education, list):
         education = []
+
+    # Provenance metadata
+    metadata = [
+        {
+            "source": "crustdata" if origin == "crustdata_sourced" else "user_registration",
+            "source_id": crustdata_id,
+            "source_url": profile_url,
+            "retrieved_at": datetime.utcnow().isoformat(),
+            "verified": False,
+        }
+    ]
 
     return PersonRecord(
         person_id=person_id,
@@ -123,7 +158,7 @@ def normalize_crustdata_person(data: dict[str, Any], origin: str = "crustdata_so
         education=education,
         resume_highlights=[],
         candidate_preferences={},
-        source_metadata=[{"raw_source": "crustdata" if origin == "crustdata_sourced" else "user_registration"}],
+        source_metadata=metadata,
     )
 
 
@@ -131,25 +166,53 @@ class PersonService:
     @staticmethod
     def get_or_create_person(db: Session, record: PersonRecord) -> Person:
         """
-        Finds existing person by crustdata_person_id or normalized profile_url,
-        preventing duplicate person records in the system.
+        Reusable canonical identity lookup and upsert:
+        1. Lookup by non-null crustdata_person_id
+        2. Lookup by normalized profile_url
+        3. Detect and reconcile conflicting rows safely without creating duplicates
+        4. Enforce one canonical Person per Crustdata identity / profile URL
         """
-        existing: Person | None = None
+        by_id_person: Person | None = None
+        by_url_person: Person | None = None
 
         if record.crustdata_person_id:
-            existing = db.query(Person).filter(Person.crustdata_person_id == record.crustdata_person_id).first()
+            by_id_person = db.query(Person).filter(
+                Person.crustdata_person_id == record.crustdata_person_id
+            ).first()
 
-        if not existing and record.profile_url:
-            norm_url = normalize_profile_url(record.profile_url)
-            existing = db.query(Person).filter(Person.profile_url == norm_url).first()
+        norm_url = normalize_profile_url(record.profile_url) if record.profile_url else None
+        if norm_url:
+            by_url_person = db.query(Person).filter(
+                Person.profile_url == norm_url
+            ).first()
+
+        # Conflict Reconciliation
+        if by_id_person and by_url_person and (by_id_person.id != by_url_person.id):
+            logger.warning(
+                f"Identity conflict detected: Crustdata ID {record.crustdata_person_id} maps to "
+                f"{by_id_person.id}, but URL {norm_url} maps to {by_url_person.id}. Reconciling..."
+            )
+            # Favor registered person or existing enriched person
+            primary = by_id_person if by_id_person.membership_status == "registered" else by_url_person
+            secondary = by_url_person if primary.id == by_id_person.id else by_id_person
+
+            # Update primary with missing identity tokens
+            if not primary.crustdata_person_id and secondary.crustdata_person_id:
+                primary.crustdata_person_id = secondary.crustdata_person_id
+            if not primary.profile_url and secondary.profile_url:
+                primary.profile_url = secondary.profile_url
+            
+            existing = primary
+        else:
+            existing = by_id_person or by_url_person
 
         if existing:
             # Update attributes without overwriting canonical ID
             record.person_id = existing.id
             if not existing.crustdata_person_id and record.crustdata_person_id:
                 existing.crustdata_person_id = record.crustdata_person_id
-            if not existing.profile_url and record.profile_url:
-                existing.profile_url = normalize_profile_url(record.profile_url)
+            if not existing.profile_url and norm_url:
+                existing.profile_url = norm_url
             if record.name and not existing.name:
                 existing.name = record.name
             if record.current_title and not existing.current_title:
@@ -158,15 +221,13 @@ class PersonService:
                 existing.current_company = record.current_company
             if record.location and not existing.location:
                 existing.location = record.location
-            
-            # Merge profile data
+
             existing.profile_data = record.model_dump()
             db.commit()
             db.refresh(existing)
             return existing
 
-        # Create new person
-        norm_url = normalize_profile_url(record.profile_url)
+        # Create new canonical Person record
         new_person = Person(
             id=record.person_id,
             crustdata_person_id=record.crustdata_person_id,
@@ -188,12 +249,14 @@ class PersonService:
     @staticmethod
     async def enrich_candidate_from_url(db: Session, profile_url: str) -> PersonRecord:
         """
-        Calls Crustdata person/enrich, normalizes into PersonRecord,
-        deduplicates and persists to database.
+        Validates URL, calls Crustdata person/enrich, normalizes into canonical PersonRecord,
+        upserts into database, and returns preview.
         """
         norm_url = normalize_profile_url(profile_url)
-        
-        # Check DB first for existing person
+        if not norm_url:
+            raise ValueError("Profile URL cannot be empty")
+
+        # Check DB first for cached profile
         existing = db.query(Person).filter(Person.profile_url == norm_url).first()
         if existing and existing.profile_data:
             rec = PersonRecord(**existing.profile_data)
@@ -201,12 +264,16 @@ class PersonService:
             rec.membership_status = existing.membership_status  # type: ignore
             return rec
 
-        # Call Crustdata
-        raw_data = await crustdata_client.enrich_person(norm_url)
-        person_record = normalize_crustdata_person(raw_data, origin="crustdata_sourced")
+        # Call Crustdata Person Enrich
+        result = await crustdata_client.person_enrich(norm_url)
+        raw_data = result.data
+
+        # Handle list-wrapped responses from Crustdata
+        item = raw_data[0] if (isinstance(raw_data, list) and raw_data) else raw_data
+        person_record = normalize_crustdata_person(item if isinstance(item, dict) else {}, origin="crustdata_sourced")
         person_record.profile_url = norm_url
 
-        # Save to DB
+        # Upsert canonical Person
         db_person = PersonService.get_or_create_person(db, person_record)
         person_record.person_id = db_person.id
         return person_record
@@ -221,14 +288,27 @@ class PersonService:
         preferences: dict[str, Any] | None = None
     ) -> PersonRecord:
         """
-        Registers a candidate or links an existing sourced person to a registered profile.
-        Never duplicates Person records.
+        Registers candidate and links User + CandidateProfile to existing Person.
+        Preserves all prior recruiter actions and match run history.
         """
-        norm_url = normalize_profile_url(profile_url)
+        norm_url = None
+        if profile_url:
+            try:
+                norm_url = normalize_profile_url(profile_url)
+            except ValueError:
+                norm_url = profile_url.strip()
+
         person: Person | None = None
 
         if person_id:
             person = db.query(Person).filter(Person.id == person_id).first()
+        if not person and email:
+            clean_email = email.strip().lower()
+            existing_user = db.query(User).filter(User.email.ilike(clean_email)).first()
+            if existing_user:
+                existing_profile = db.query(CandidateProfile).filter(CandidateProfile.user_id == existing_user.id).first()
+                if existing_profile and existing_profile.person_id:
+                    person = db.query(Person).filter(Person.id == existing_profile.person_id).first()
         if not person and norm_url:
             person = db.query(Person).filter(Person.profile_url == norm_url).first()
 
@@ -244,14 +324,14 @@ class PersonService:
             )
             person = PersonService.get_or_create_person(db, person_rec)
         else:
-            # Upgrade membership status
+            # Upgrade membership status without losing history
             person.membership_status = "registered"
             if name and not person.name:
                 person.name = name
             db.commit()
             db.refresh(person)
 
-        # Create or update User
+        # Create or link User
         user_email = email or f"candidate_{person.id[:8]}@swipehire.local"
         user = db.query(User).filter(User.email == user_email).first()
         if not user:
@@ -264,8 +344,10 @@ class PersonService:
             db.commit()
             db.refresh(user)
 
-        # Create or update CandidateProfile
-        profile = db.query(CandidateProfile).filter(CandidateProfile.person_id == person.id).first()
+        # Create or update CandidateProfile (query by person_id or user_id to prevent duplicate user_id conflict)
+        profile = db.query(CandidateProfile).filter(
+            (CandidateProfile.person_id == person.id) | (CandidateProfile.user_id == user.id)
+        ).first()
         if not profile:
             profile = CandidateProfile(
                 user_id=user.id,
@@ -274,11 +356,13 @@ class PersonService:
             )
             db.add(profile)
         else:
+            profile.person_id = person.id
+            profile.user_id = user.id
             if preferences:
-                profile.preferences = {**profile.preferences, **preferences}
+                profile.preferences = {**(profile.preferences or {}), **preferences}
         db.commit()
 
-        # Update profile_data
+        # Update normalized profile JSON
         data = dict(person.profile_data or {})
         data["person_id"] = person.id
         data["membership_status"] = "registered"

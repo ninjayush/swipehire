@@ -21,14 +21,16 @@ from app.config import settings
 router = APIRouter(prefix="/api/candidates", tags=["Candidates"])
 logger = logging.getLogger("api.candidates")
 
+ALLOWED_RESUME_EXTENSIONS = {".pdf", ".docx"}
+MAX_RESUME_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
 def get_person_2_resume_parser():
+    """Import Person 2's resume parser function if present; otherwise return None."""
     try:
         from app.ai.resume_parser import parse_resume_text
         return parse_resume_text
     except (ImportError, ModuleNotFoundError):
-        def fallback_parser(text: str) -> dict:
-            return {"skills": ["Python", "FastAPI"], "summary": text[:200]}
-        return fallback_parser
+        return None
 
 # -------------------------------------------------------------
 # POST /api/candidates/enrich
@@ -39,16 +41,18 @@ async def enrich_candidate(req: CandidateEnrichRequest, db: Session = Depends(ge
     try:
         record = await PersonService.enrich_candidate_from_url(db, req.profile_url)
         return CandidateEnrichResponse(person=record)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error enriching candidate: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Failed to enrich candidate: {str(e)}")
 
 # -------------------------------------------------------------
 # POST /api/candidates/register
 # -------------------------------------------------------------
 @router.post("/register", response_model=CandidateEnrichResponse)
 def register_candidate(req: CandidateRegisterRequest, db: Session = Depends(get_db)):
-    """Register or link candidate profile."""
+    """Register candidate or link existing sourced profile to registered account."""
     try:
         record = PersonService.register_candidate(
             db=db,
@@ -59,6 +63,8 @@ def register_candidate(req: CandidateRegisterRequest, db: Session = Depends(get_
             preferences=req.candidate_preferences
         )
         return CandidateEnrichResponse(person=record)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error registering candidate: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -68,14 +74,65 @@ def register_candidate(req: CandidateRegisterRequest, db: Session = Depends(get_
 # -------------------------------------------------------------
 @router.post("/{id}/resume")
 async def upload_resume(id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Upload resume file and trigger resume parser."""
+    """
+    Upload resume file with strict type checking, size enforcement,
+    safe storage (no path traversal), and Person 2 parser integration boundary.
+    """
     person = db.query(Person).filter(Person.id == id).first()
     if not person:
-        raise HTTPException(status_code=404, detail="Candidate not found")
+        raise HTTPException(status_code=404, detail=f"Candidate {id} not found")
 
+    # 1. Validate file extension
+    orig_name = os.path.basename(file.filename or "")
+    _, ext = os.path.splitext(orig_name.lower())
+    if ext not in ALLOWED_RESUME_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Only PDF and DOCX files are permitted."
+        )
+
+    # 2. Read content and enforce size limit
+    content = await file.read()
+    if len(content) > MAX_RESUME_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds maximum allowed size of {MAX_RESUME_SIZE_BYTES / (1024 * 1024):.1f}MB"
+        )
+
+    # 3. Secure server-side filename (prevents directory traversal)
+    safe_filename = f"{uuid.uuid4().hex[:12]}_{orig_name.replace(' ', '_')}"
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    file_path = os.path.join(settings.UPLOAD_DIR, safe_filename)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # 4. Text extraction attempt
+    text_content = ""
+    try:
+        text_content = content.decode("utf-8", errors="ignore")
+    except Exception:
+        text_content = f"Binary content extracted from {orig_name}"
+
+    # 5. Call Person 2's parser or return integration-not-ready status
+    resume_parser = get_person_2_resume_parser()
+    parsed_json = None
+    parser_status = "completed"
+
+    if resume_parser:
+        try:
+            parsed_json = resume_parser(text_content)
+        except Exception as e:
+            logger.warning(f"Person 2 resume parser error: {e}")
+            parsed_json = None
+            parser_status = f"parser_error: {str(e)}"
+    else:
+        # Integration not merged yet by Person 2
+        parser_status = "person_2_ai_module_not_ready"
+
+    # 6. Ensure CandidateProfile exists
     profile = db.query(CandidateProfile).filter(CandidateProfile.person_id == id).first()
     if not profile:
-        # Create candidate profile if needed
         user = db.query(User).filter(User.role == "candidate").first()
         profile = CandidateProfile(
             user_id=user.id if user else str(uuid.uuid4()),
@@ -86,38 +143,24 @@ async def upload_resume(id: str, file: UploadFile = File(...), db: Session = Dep
         db.commit()
         db.refresh(profile)
 
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(settings.UPLOAD_DIR, f"{id}_{file.filename}")
-    
-    content = await file.read()
-    with open(file_path, "wb") as f:
-        f.write(content)
-
-    # Simple text extraction
-    text_content = ""
-    try:
-        text_content = content.decode("utf-8", errors="ignore")
-    except Exception:
-        text_content = f"Binary resume uploaded: {file.filename}"
-
-    # Call Person 2's resume parser
-    resume_parser = get_person_2_resume_parser()
-    parsed_json = resume_parser(text_content)
-
     resume = Resume(
         candidate_profile_id=profile.id,
-        filename=file.filename or "resume.pdf",
+        filename=orig_name,
         file_path=file_path,
         extracted_text=text_content,
         parsed_json=parsed_json
     )
     db.add(resume)
     db.commit()
+    db.refresh(resume)
 
+    # Note: local file_path is NEVER returned in response
     return {
         "status": "success",
         "resume_id": resume.id,
-        "filename": resume.filename,
+        "filename": orig_name,
+        "file_size_bytes": len(content),
+        "parser_status": parser_status,
         "parsed_data": parsed_json
     }
 
@@ -126,7 +169,7 @@ async def upload_resume(id: str, file: UploadFile = File(...), db: Session = Dep
 # -------------------------------------------------------------
 @router.get("/{id}", response_model=CandidateEnrichResponse)
 def get_candidate(id: str, db: Session = Depends(get_db)):
-    """Retrieve candidate profile by ID."""
+    """Retrieve candidate profile by canonical ID."""
     person = db.query(Person).filter(Person.id == id).first()
     if not person:
         raise HTTPException(status_code=404, detail="Candidate not found")
@@ -148,6 +191,9 @@ def get_candidate_interests(id: str, db: Session = Depends(get_db)):
     person = db.query(Person).filter(Person.id == id).first()
     if not person:
         raise HTTPException(status_code=404, detail="Candidate not found")
+
+    if person.membership_status != "registered":
+        raise HTTPException(status_code=403, detail="Only registered candidates can view interest requests.")
 
     requests = db.query(InterestRequest).filter(InterestRequest.person_id == id).all()
     results = []

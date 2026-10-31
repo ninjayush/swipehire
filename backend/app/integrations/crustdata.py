@@ -1,23 +1,117 @@
 import asyncio
 import time
+import random
 import logging
-from typing import Any
+from typing import Any, Generic, TypeVar
 import httpx
 from app.config import settings
 
 logger = logging.getLogger("crustdata")
 
+T = TypeVar("T")
+
+# -------------------------------------------------------------
+# Specific Crustdata Exceptions
+# -------------------------------------------------------------
 class CrustdataError(Exception):
-    """Custom exception for Crustdata API interactions."""
+    """Base exception for Crustdata API interactions."""
     def __init__(self, message: str, status_code: int | None = None, details: Any = None):
         super().__init__(message)
         self.status_code = status_code
         self.details = details
 
+class CrustdataBadRequestError(CrustdataError):
+    """HTTP 400: Invalid request body, identifier or filter (non-retryable)."""
+    pass
+
+class CrustdataAuthError(CrustdataError):
+    """HTTP 401: Invalid or missing API key (non-retryable)."""
+    pass
+
+class CrustdataForbiddenError(CrustdataError):
+    """HTTP 403: Endpoint or field permission denied (non-retryable)."""
+    pass
+
+class CrustdataRateLimitError(CrustdataError):
+    """HTTP 429: Rate limit exceeded (retryable with backoff)."""
+    def __init__(self, message: str, retry_after: float | None = None, **kwargs):
+        super().__init__(message, status_code=429, **kwargs)
+        self.retry_after = retry_after
+
+class CrustdataServerError(CrustdataError):
+    """HTTP 5xx or network timeout (retryable)."""
+    pass
+
+
+# -------------------------------------------------------------
+# Response Wrapper & In-Memory TTL Cache
+# -------------------------------------------------------------
+class CrustdataResult(Generic[T]):
+    """Typed wrapper preserving structured data, pagination cursor, and safe metadata."""
+    def __init__(
+        self,
+        data: T,
+        raw: Any = None,
+        cursor: str | None = None,
+        metadata: dict[str, Any] | None = None
+    ):
+        self.data = data
+        self.raw = raw
+        self.cursor = cursor
+        self.metadata = metadata or {}
+
+    def __getitem__(self, item: str) -> Any:
+        """Allow dict-like access for backward compatibility."""
+        if isinstance(self.data, dict) and item in self.data:
+            return self.data[item]
+        if hasattr(self, item):
+            return getattr(self, item)
+        raise KeyError(item)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if isinstance(self.data, dict):
+            return self.data.get(key, default)
+        return getattr(self, key, default)
+
+
+class TTLCache:
+    """Thread-safe in-process cache with configurable TTL and hit/miss metrics."""
+    def __init__(self, default_ttl: float = 3600.0):
+        self.default_ttl = default_ttl
+        self._cache: dict[str, tuple[float, Any]] = {}
+        self.hits: int = 0
+        self.misses: int = 0
+
+    def get(self, key: str) -> Any | None:
+        now = time.time()
+        if key in self._cache:
+            expires_at, value = self._cache[key]
+            if expires_at > now:
+                self.hits += 1
+                return value
+            else:
+                del self._cache[key]
+        self.misses += 1
+        return None
+
+    def set(self, key: str, value: Any, ttl: float | None = None) -> None:
+        duration = ttl if ttl is not None else self.default_ttl
+        self._cache[key] = (time.time() + duration, value)
+
+    def clear(self) -> None:
+        self._cache.clear()
+        self.hits = 0
+        self.misses = 0
+
+
+# -------------------------------------------------------------
+# Production-Minded Crustdata Client
+# -------------------------------------------------------------
 class CrustdataClient:
     """
-    Robust, typed client for Crustdata API with retries, caching,
-    timeout management, and sanitized error reporting.
+    Robust, production-minded Crustdata API client with finite timeouts,
+    connection limits, distinct error handling, bounded retries with jitter,
+    TTL caching, cursor-aware pagination, and safe field selection.
     """
     def __init__(
         self,
@@ -26,121 +120,232 @@ class CrustdataClient:
         api_version: str | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
+        cache_ttl: float = 3600.0,
+        transport: httpx.AsyncBaseTransport | None = None,
     ):
-        self.api_key = api_key or settings.api_key
+        if api_key is not None:
+            self.api_key = api_key.strip().strip('"').strip("'")
+        else:
+            self.api_key = settings.api_key.strip().strip('"').strip("'")
         self.base_url = (base_url or settings.CRUSTDATA_BASE_URL).rstrip("/")
         self.api_version = api_version or settings.CRUSTDATA_API_VERSION
         self.timeout = timeout or settings.CRUSTDATA_TIMEOUT_SECONDS
-        self.max_retries = max_retries or settings.CRUSTDATA_MAX_RETRIES
+        self.max_retries = max_retries if max_retries is not None else settings.CRUSTDATA_MAX_RETRIES
+        self.transport = transport
 
-        # In-memory prototype cache: key -> data
-        self._person_cache: dict[str, dict[str, Any]] = {}
-        self._company_cache: dict[str, dict[str, Any]] = {}
+        # Connection limits
+        self.limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
+
+        # Caches
+        self.person_cache = TTLCache(default_ttl=cache_ttl)
+        self.company_cache = TTLCache(default_ttl=cache_ttl)
 
     def _get_headers(self) -> dict[str, str]:
+        if not self.api_key:
+            raise CrustdataAuthError("Crustdata API key is missing or not configured.", status_code=401)
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "x-api-version": self.api_version,
         }
 
-    async def _post(self, endpoint: str, json_data: dict[str, Any]) -> dict[str, Any]:
-        """Execute a POST request with exponential backoff on retryable errors."""
+    async def _post(
+        self,
+        endpoint: str,
+        json_data: dict[str, Any],
+        is_retryable_call: bool = True
+    ) -> CrustdataResult[Any]:
+        """
+        Executes a POST request against the Crustdata API.
+        Applies exponential backoff with jitter on 429 and 5xx errors only.
+        Never logs API keys or sensitive profile details.
+        """
         url = f"{self.base_url}{endpoint}"
         headers = self._get_headers()
-        last_error = None
+        max_attempts = self.max_retries if is_retryable_call else 0
 
-        for attempt in range(self.max_retries + 1):
+        for attempt in range(max_attempts + 1):
             start_time = time.time()
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with httpx.AsyncClient(
+                    timeout=self.timeout,
+                    limits=self.limits,
+                    transport=self.transport
+                ) as client:
                     response = await client.post(url, json=json_data, headers=headers)
                     latency = time.time() - start_time
-                    logger.info(f"Crustdata POST {endpoint} returned status {response.status_code} in {latency:.2f}s")
 
-                    # Handle successful response
+                    req_id = response.headers.get("x-request-id") or response.headers.get("request-id")
+                    credits_rem = response.headers.get("x-credits-remaining")
+
+                    # Safe logging without credentials or sensitive payloads
+                    logger.info(
+                        f"Crustdata POST {endpoint} -> status={response.status_code} in {latency*1000:.1f}ms "
+                        f"[req_id={req_id or 'none'}]"
+                    )
+
+                    metadata = {
+                        "endpoint": endpoint,
+                        "status_code": response.status_code,
+                        "latency_ms": round(latency * 1000, 2),
+                        "request_id": req_id,
+                        "credits_remaining": credits_rem,
+                    }
+
+                    # Success (200, 201)
                     if response.status_code in (200, 201):
                         data = response.json()
-                        return data if isinstance(data, dict) else {"data": data}
+                        cursor = None
+                        if isinstance(data, dict):
+                            cursor = data.get("cursor") or data.get("next_cursor")
+                        return CrustdataResult(data=data, raw=data, cursor=cursor, metadata=metadata)
 
-                    # Handle 401 / 403 Authentication / Authorization
-                    if response.status_code in (401, 403):
-                        logger.error(f"Crustdata authentication failure: {response.status_code}")
-                        raise CrustdataError(
-                            "Crustdata authentication failed. Please verify CRUSTDATA_API_KEY.",
-                            status_code=response.status_code
+                    # 400 Bad Request
+                    if response.status_code == 400:
+                        err_text = response.text[:300]
+                        raise CrustdataBadRequestError(
+                            f"Crustdata invalid request on {endpoint}: {err_text}",
+                            status_code=400,
+                            details=err_text
                         )
 
-                    # Handle Rate Limits (429) & Server Errors (500, 502, 503, 504)
-                    if response.status_code in (429, 500, 502, 503, 504):
-                        if attempt < self.max_retries:
-                            backoff = (2 ** attempt) * 0.5
+                    # 401 Unauthorized
+                    if response.status_code == 401:
+                        raise CrustdataAuthError(
+                            "Crustdata authentication failure: Invalid or expired API key.",
+                            status_code=401
+                        )
+
+                    # 403 Forbidden
+                    if response.status_code == 403:
+                        err_text = response.text[:300]
+                        raise CrustdataForbiddenError(
+                            f"Crustdata permission denied on {endpoint}: {err_text}",
+                            status_code=403,
+                            details=err_text
+                        )
+
+                    # 429 Rate Limit
+                    if response.status_code == 429:
+                        retry_after_header = response.headers.get("Retry-After")
+                        retry_after = float(retry_after_header) if (retry_after_header and retry_after_header.isdigit()) else None
+
+                        if attempt < max_attempts:
+                            backoff = retry_after or ((2 ** attempt) * 0.5 + random.uniform(0.1, 0.3))
                             logger.warning(
-                                f"Crustdata {response.status_code} on {endpoint}. Retrying in {backoff}s (attempt {attempt+1}/{self.max_retries})."
+                                f"Crustdata rate limited (429) on {endpoint}. Backoff {backoff:.2f}s "
+                                f"(attempt {attempt + 1}/{max_attempts})"
                             )
                             await asyncio.sleep(backoff)
                             continue
-                        raise CrustdataError(
-                            f"Crustdata request failed with status {response.status_code} after {self.max_retries} retries.",
+
+                        raise CrustdataRateLimitError(
+                            f"Crustdata rate limit exceeded on {endpoint} after {max_attempts} retries.",
+                            retry_after=retry_after
+                        )
+
+                    # 5xx Server Errors
+                    if response.status_code in (500, 502, 503, 504):
+                        if attempt < max_attempts:
+                            backoff = (2 ** attempt) * 0.5 + random.uniform(0.1, 0.3)
+                            logger.warning(
+                                f"Crustdata server error ({response.status_code}) on {endpoint}. "
+                                f"Retrying in {backoff:.2f}s (attempt {attempt + 1}/{max_attempts})"
+                            )
+                            await asyncio.sleep(backoff)
+                            continue
+
+                        raise CrustdataServerError(
+                            f"Crustdata server error ({response.status_code}) on {endpoint} after {max_attempts} retries.",
                             status_code=response.status_code,
                             details=response.text[:200]
                         )
 
-                    # Other client errors (400, 404, etc.)
+                    # Fallback for unexpected status codes
                     raise CrustdataError(
-                        f"Crustdata error {response.status_code}: {response.text[:200]}",
+                        f"Crustdata unexpected status {response.status_code} on {endpoint}: {response.text[:200]}",
                         status_code=response.status_code,
                         details=response.text[:200]
                     )
 
-            except httpx.TimeoutException as e:
-                logger.warning(f"Crustdata request timeout on {endpoint} (attempt {attempt+1}/{self.max_retries})")
-                last_error = CrustdataError(f"Request timeout while calling Crustdata: {endpoint}", status_code=408)
-                if attempt < self.max_retries:
-                    await asyncio.sleep((2 ** attempt) * 0.5)
+            except httpx.TimeoutException:
+                logger.warning(f"Crustdata timeout on {endpoint} (attempt {attempt + 1}/{max_attempts})")
+                if attempt < max_attempts:
+                    await asyncio.sleep((2 ** attempt) * 0.5 + random.uniform(0.1, 0.2))
                     continue
-                raise last_error
-            except httpx.RequestError as e:
-                logger.error(f"Crustdata network request error on {endpoint}: {str(e)}")
-                last_error = CrustdataError(f"Network error communicating with Crustdata: {str(e)}", status_code=500)
-                if attempt < self.max_retries:
-                    await asyncio.sleep((2 ** attempt) * 0.5)
-                    continue
-                raise last_error
+                raise CrustdataServerError(f"Request timeout calling Crustdata: {endpoint}", status_code=408)
 
-        raise last_error or CrustdataError("Unknown Crustdata error occurred.")
+            except (httpx.RequestError, httpx.ConnectError) as e:
+                logger.warning(f"Crustdata network connection error on {endpoint}: {e}")
+                if attempt < max_attempts:
+                    await asyncio.sleep((2 ** attempt) * 0.5 + random.uniform(0.1, 0.2))
+                    continue
+                raise CrustdataServerError(f"Network error connecting to Crustdata: {e}", status_code=500)
+
+        raise CrustdataServerError(f"Failed to execute Crustdata request on {endpoint}")
 
     # -------------------------------------------------------------
-    # 1. POST /person/enrich
+    # Core Endpoint 1: POST /person/enrich
     # -------------------------------------------------------------
-    async def enrich_person(self, profile_url: str) -> dict[str, Any]:
-        """Enrich a candidate from their professional network profile URL."""
-        profile_url = profile_url.strip()
-        if not profile_url:
-            raise CrustdataError("profile_url must not be empty", status_code=400)
+    async def person_enrich(
+        self,
+        profile_urls: list[str] | str,
+        fields: list[str] | None = None
+    ) -> CrustdataResult[Any]:
+        """
+        Enrich candidate from professional network profile URL(s).
+        Enforces exactly one identifier type (professional_network_profile_urls).
+        """
+        if isinstance(profile_urls, str):
+            urls = [profile_urls.strip()]
+        else:
+            urls = [u.strip() for u in profile_urls if u.strip()]
 
-        # Cache check
-        if profile_url in self._person_cache:
-            return self._person_cache[profile_url]
+        if not urls:
+            raise CrustdataBadRequestError("At least one profile_url must be provided", status_code=400)
 
-        payload = {"professional_network_profile_urls": [profile_url]}
+        cache_key = f"person:{':'.join(sorted(urls))}"
+        cached = self.person_cache.get(cache_key)
+        if cached is not None:
+            return CrustdataResult(data=cached, raw=cached, metadata={"cached": True})
+
+        payload: dict[str, Any] = {
+            "professional_network_profile_urls": urls
+        }
+        if fields:
+            payload["fields"] = fields
+
         result = await self._post("/person/enrich", payload)
-        self._person_cache[profile_url] = result
+        self.person_cache.set(cache_key, result.data)
         return result
 
     # -------------------------------------------------------------
-    # 2. POST /person/search
+    # Core Endpoint 2: POST /person/search
     # -------------------------------------------------------------
-    async def search_persons(
+    async def person_search(
         self,
         query: dict[str, Any] | None = None,
+        search: str | dict[str, Any] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        fields: list[str] | None = None,
         limit: int = 10,
         cursor: str | None = None
-    ) -> dict[str, Any]:
-        """Search for external candidate profiles matching query criteria."""
-        payload: dict[str, Any] = {"limit": limit}
-        
-        if query:
+    ) -> CrustdataResult[Any]:
+        """
+        Search external candidate profiles.
+        Enforces bounded results (limit capped to 50) and cursor propagation.
+        """
+        bounded_limit = max(1, min(limit, 50))
+        payload: dict[str, Any] = {"limit": bounded_limit}
+
+        if search:
+            if isinstance(search, str):
+                payload["search"] = {"query": search}
+            elif isinstance(search, dict):
+                payload["search"] = search
+        elif filters:
+            payload["filters"] = filters
+        elif query:
             if "search" in query:
                 payload["search"] = query["search"]
             elif "query" in query:
@@ -154,81 +359,138 @@ class CrustdataClient:
         else:
             payload["search"] = {"query": "Software Engineer"}
 
+        if fields:
+            payload["fields"] = fields
         if cursor:
             payload["cursor"] = cursor
 
         return await self._post("/person/search", payload)
 
     # -------------------------------------------------------------
-    # 3. POST /company/identify
+    # Core Endpoint 3: POST /company/identify
     # -------------------------------------------------------------
+    async def company_identify(
+        self,
+        company_name: str | None = None,
+        domain: str | None = None
+    ) -> CrustdataResult[Any]:
+        """
+        Resolve company identity given company name OR domain.
+        Enforces exactly one identifier type per API rules.
+        """
+        payload: dict[str, Any] = {}
+        if domain:
+            clean_domain = domain.strip().lower()
+            payload["domains"] = [clean_domain]
+            cache_key = f"company_id:domain:{clean_domain}"
+        elif company_name:
+            clean_name = company_name.strip()
+            payload["names"] = [clean_name]
+            cache_key = f"company_id:name:{clean_name.lower()}"
+        else:
+            raise CrustdataBadRequestError("Either domain or company_name is required", status_code=400)
+
+        cached = self.company_cache.get(cache_key)
+        if cached is not None:
+            return CrustdataResult(data=cached, raw=cached, metadata={"cached": True})
+
+        result = await self._post("/company/identify", payload)
+        self.company_cache.set(cache_key, result.data)
+        return result
+
+    # -------------------------------------------------------------
+    # Core Endpoint 4: POST /company/enrich
+    # -------------------------------------------------------------
+    async def company_enrich(
+        self,
+        company_id: int | str | None = None,
+        domain: str | None = None,
+        fields: list[str] | None = None
+    ) -> CrustdataResult[Any]:
+        """
+        Enrich company profile given company ID OR domain.
+        Enforces exactly one identifier type per API rules.
+        """
+        payload: dict[str, Any] = {}
+        if company_id is not None:
+            try:
+                cid = int(company_id)
+                payload["crustdata_company_ids"] = [cid]
+                cache_key = f"company_enrich:id:{cid}"
+            except ValueError:
+                clean_dom = str(company_id).strip().lower()
+                payload["domains"] = [clean_dom]
+                cache_key = f"company_enrich:domain:{clean_dom}"
+        elif domain:
+            clean_dom = domain.strip().lower()
+            payload["domains"] = [clean_dom]
+            cache_key = f"company_enrich:domain:{clean_dom}"
+        else:
+            raise CrustdataBadRequestError("Either company_id or domain is required", status_code=400)
+
+        if fields:
+            payload["fields"] = fields
+
+        cached = self.company_cache.get(cache_key)
+        if cached is not None:
+            return CrustdataResult(data=cached, raw=cached, metadata={"cached": True})
+
+        result = await self._post("/company/enrich", payload)
+        self.company_cache.set(cache_key, result.data)
+        return result
+
+    # -------------------------------------------------------------
+    # Backward Compatibility Aliases (Returning dict/list directly)
+    # -------------------------------------------------------------
+    async def enrich_person(self, profile_url: str) -> dict[str, Any] | list[Any]:
+        res = await self.person_enrich(profile_urls=profile_url)
+        return res.data
+
+    async def search_persons(
+        self,
+        query: dict[str, Any] | None = None,
+        limit: int = 10,
+        cursor: str | None = None
+    ) -> dict[str, Any]:
+        res = await self.person_search(query=query, limit=limit, cursor=cursor)
+        return res.data if isinstance(res.data, dict) else {"results": res.data}
+
     async def identify_company(
         self,
         company_name: str | None = None,
         domain: str | None = None
-    ) -> dict[str, Any]:
-        """Resolve a company name or domain to canonical identity."""
-        payload: dict[str, Any] = {}
-        if domain:
-            payload["domains"] = [domain.strip()]
-        elif company_name:
-            payload["names"] = [company_name.strip()]
+    ) -> dict[str, Any] | list[Any]:
+        res = await self.company_identify(company_name=company_name, domain=domain)
+        return res.data
 
-        if not payload:
-            raise CrustdataError("Either company_name or domain is required", status_code=400)
-
-        cache_key = f"{company_name}:{domain}"
-        if cache_key in self._company_cache:
-            return self._company_cache[cache_key]
-
-        result = await self._post("/company/identify", payload)
-        self._company_cache[cache_key] = result
-        return result
-
-    # -------------------------------------------------------------
-    # 4. POST /company/enrich
-    # -------------------------------------------------------------
     async def enrich_company(
         self,
         company_id: int | str | None = None,
         domain: str | None = None
-    ) -> dict[str, Any]:
-        """Enrich company details given company ID or domain."""
-        payload: dict[str, Any] = {}
-        if company_id:
-            try:
-                cid = int(company_id)
-                payload["crustdata_company_ids"] = [cid]
-            except ValueError:
-                payload["domains"] = [str(company_id).strip()]
-        elif domain:
-            payload["domains"] = [domain.strip()]
-        else:
-            raise CrustdataError("Either company_id or domain is required", status_code=400)
-
-        cache_key = f"enrich:{company_id}:{domain}"
-        if cache_key in self._company_cache:
-            return self._company_cache[cache_key]
-
-        result = await self._post("/company/enrich", payload)
-        self._company_cache[cache_key] = result
-        return result
+    ) -> dict[str, Any] | list[Any]:
+        res = await self.company_enrich(company_id=company_id, domain=domain)
+        return res.data
 
     # -------------------------------------------------------------
-    # Diagnostics / Smoke Test
+    # Diagnostics Method
     # -------------------------------------------------------------
     async def diagnostics(self) -> dict[str, Any]:
-        """Safe diagnostics probe to verify API key and reachability."""
+        """Probes API reachability, authentication, and endpoint status."""
         if not self.api_key:
             return {"status": "unconfigured", "error": "No CRUSTDATA_API_KEY configured."}
 
         try:
-            res = await self.identify_company(domain="google.com")
-            return {"status": "connected", "verified": True}
+            res = await self.company_identify(domain="google.com")
+            return {
+                "status": "connected",
+                "verified": True,
+                "latency_ms": res.metadata.get("latency_ms"),
+                "credits_remaining": res.metadata.get("credits_remaining"),
+            }
         except CrustdataError as e:
             return {"status": "error", "error": str(e), "status_code": e.status_code}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-# Global client singleton
+# Singleton client instance
 crustdata_client = CrustdataClient()

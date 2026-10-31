@@ -47,6 +47,23 @@ class CandidateMatch(Base):
     # Relationships
     job = relationship("JobRole", back_populates="candidate_matches")
     match_run = relationship("MatchRun", back_populates="candidate_matches")
+    evidence_items = relationship("EvidenceItem", back_populates="candidate_match")
+
+
+class EvidenceItem(Base):
+    __tablename__ = "evidence_items"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    candidate_match_id = Column(String(36), ForeignKey("candidate_matches.id"), nullable=False)
+    criterion = Column(String(255), nullable=False)
+    evidence_text = Column(String, nullable=False)
+    source_type = Column(String(50), nullable=False, default="crustdata_profile")  # "resume", "crustdata_profile", "user_input"
+    confidence_score = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    candidate_match = relationship("CandidateMatch", back_populates="evidence_items")
 
 
 class RecruiterAction(Base):
