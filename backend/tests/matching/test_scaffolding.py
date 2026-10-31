@@ -84,19 +84,24 @@ def test_deck_builder_scaffolding_contract() -> None:
         build_candidate_deck(requirements=req, candidates=[person])
 
 
-def test_filter_and_score_scaffolding_contracts() -> None:
-    """Verify filter and score functions raise NotImplementedError in scaffolding."""
-    req = JobRequirements(title="Synthetic Role")
+def test_filter_and_score_contracts() -> None:
+    """Verify filter and score functions execute deterministically."""
+    req = JobRequirements(title="Synthetic Role", must_have_skills=["python"])
     person = PersonRecord(
         person_id="p-001",
         origin="registered",
         membership_status="registered",
+        skills=["python"],
+        experience_years=3.0,
+        current_title="Synthetic Role",
     )
-    with pytest.raises(NotImplementedError):
-        evaluate_hard_filters(req, person)
+    eligible, reasons, breakdown = evaluate_hard_filters(req, person)
+    assert eligible is True
+    assert reasons == []
 
-    with pytest.raises(NotImplementedError):
-        score_candidate(req, person)
+    scored = score_candidate(req, person)
+    assert scored["fit_score"] > 0.0
+    assert "skills" in scored["component_scores"]
 
-    with pytest.raises(NotImplementedError):
-        classify_fit_type(req, person, fit_score=80.0, component_scores={})
+    fit_type = classify_fit_type(req, person, fit_score=scored["fit_score"], component_scores=scored["component_scores"])
+    assert fit_type in {"direct", "adjacent", None}

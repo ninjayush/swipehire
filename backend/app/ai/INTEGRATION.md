@@ -167,21 +167,8 @@ Person 1 can map this output directly into `PersonRecord` fields without schema 
 1. `PersonRecord.skills`: Map directly from `resume_data["skills"]`.
 2. `PersonRecord.employment_history`: Map directly from `resume_data["employment_history"]`.
 3. `PersonRecord.education`: Map directly from `resume_data["education"]`.
-4. `PersonRecord.resume_highlights`: Populate using a list containing project highlights, metrics, and achievements:
-   ```python
-   resume_highlights = [
-       {"type": "project", "name": p["name"], "metrics": p["metrics"]}
-       for p in resume_data["projects"]
-   ] + [
-       {"type": "metric", "content": m} for m in resume_data["metrics"]
-   ] + [
-       {"type": "achievement", "content": a} for a in resume_data["achievements"]
-   ]
-   ```
-5. `PersonRecord.source_metadata`: Append:
-   ```python
-   {"source": "resume_extracted", "warnings": resume_data["extraction_warnings"]}
-   ```
+4. `PersonRecord.resume_highlights`: Populate using a list containing project highlights, metrics, and achievements.
+5. `PersonRecord.source_metadata`: Append `{"source": "resume_extracted", "warnings": resume_data["extraction_warnings"]}`.
 
 ### Sample Sanitized Output
 ```json
@@ -227,3 +214,56 @@ Person 1 can map this output directly into `PersonRecord` fields without schema 
   "extraction_warnings": []
 }
 ```
+
+## 8. Deterministic Matching Engine Specification (Prompt 5 Deliverable)
+
+### 1. Hard-Filter Evaluation (`app.matching.filters`)
+Hard filters gate candidate eligibility. Any failed filter immediately marks `eligible = False`.
+- **Filter Evaluation Order**:
+  1. `must_have_skills` (normalized via alias dictionary)
+  2. `mandatory_qualifications` (degrees and certifications)
+  3. `min_experience_years` and `max_experience_years` (when explicitly defined)
+  4. `required_fields` (fails closed when unknown)
+  5. `dealbreakers` (location and work mode mandates)
+- **Stable Exclusion Reason Codes**:
+  - `missing_mandatory_skill: <skill>`
+  - `missing_mandatory_qualification: <qual>`
+  - `experience_below_minimum`
+  - `experience_above_maximum`
+  - `experience_unknown_required`
+  - `availability_unknown_required`
+  - `salary_unknown_required`
+  - `resume_missing_required`
+  - `location_unknown_required`
+  - `location_mismatch`
+  - `work_mode_mismatch`
+  - `<field>_unknown_required`
+- **Unknown Data Policy**:
+  - If a field is explicitly demanded in `required_fields`, missing data **fails closed**.
+  - Missing optional data (e.g. preferred skills, optional preferences) **does not exclude**.
+
+### 2. Fit Scoring (`app.matching.scoring`)
+- **Formula**:
+  $$\text{fit\_score} = 0.30 \cdot \text{skills} + 0.25 \cdot \text{experience} + 0.20 \cdot \text{role\_domain} + 0.15 \cdot \text{trajectory} + 0.10 \cdot \text{context}$$
+- **Component Bounds**: Every component is normalized strictly between $0.0$ and $100.0$.
+- **Missing-Data & Evidence Policy**:
+  - When a component has no supporting evidence in the profile, its score is $0.0$.
+  - Missing component weights are **not redistributed** (preventing artificial score inflation on sparse profiles).
+  - `evidence_coverage` explicitly measures the ratio of documented dimensions ($0.0 \dots 1.0$).
+
+### 3. Direct vs. Adjacent Classification (`app.matching.classification`)
+- **Thresholds (Initial Engineering Defaults for Team Calibration)**:
+  - `DEFAULT_DIRECT_MIN_SCORE = 70.0`
+  - `DEFAULT_ADJACENT_MIN_SCORE = 50.0`
+  - `MIN_DIRECT_SKILLS_SCORE = 60.0`
+  - `MIN_DIRECT_ROLE_DOMAIN_SCORE = 50.0`
+  - `MIN_ADJACENT_TRANSFERABLE_SKILLS = 40.0`
+- **Direct Fit**:
+  - Passes all hard filters.
+  - $\text{fit\_score} \ge 70.0$, $\text{skills} \ge 60.0$, $\text{role\_domain} \ge 50.0$.
+- **Adjacent Fit**:
+  - Passes all hard filters (guaranteed non-negotiable).
+  - $\text{fit\_score} \ge 50.0$, demonstrates transferable capabilities ($\text{skills} \ge 40.0$ or $\text{experience} \ge 50.0$).
+  - Misses non-mandatory preferred criteria or literal title alignment.
+- **Unclassified / Weak (`None`)**:
+  - Candidates with $\text{fit\_score} < 50.0$ receive `fit_type = None` and will never be presented in the displayed deck.
