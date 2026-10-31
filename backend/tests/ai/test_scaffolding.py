@@ -60,9 +60,10 @@ def test_jd_parser_empty_input_validation() -> None:
         parse_job_description("   \n\t  ")
 
 
-def test_jd_parser_scaffolding_contract() -> None:
-    """Verify parse_job_description raises NotImplementedError rather than returning fake data."""
-    with pytest.raises(NotImplementedError):
+def test_jd_parser_requires_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify parse_job_description fails with AIConfigurationError when unconfigured."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(AIConfigurationError):
         parse_job_description("Senior Python Engineer with 5+ years experience")
 
 

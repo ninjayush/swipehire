@@ -97,3 +97,47 @@ anthropic>=0.40.0
 - Primary extraction uses Anthropic Tool Use / JSON Schema.
 - If primary output is malformed, exactly **one** repair attempt is executed including the validation diagnostics.
 - If repair fails, an `AIParsingError` is raised with a concise diagnostic. No infinite loops or unredacted credential leaks.
+
+## 6. Job Description Parser Specification (Prompt 3 Deliverable)
+
+### Public Signature
+```python
+from app.ai.jd_parser import parse_job_description
+from app.database.schemas import JobRequirements
+
+job_req: JobRequirements = parse_job_description(raw_jd: str)
+```
+
+### Output Semantics & Rules
+1. **Mandatory vs. Preferred Separation**:
+   - `must_have_skills` contains only explicitly compulsory skills (e.g., "Must have Python", "Required: PostgreSQL").
+   - `preferred_skills` contains nice-to-have, bonus, or preferred skills. Overlapping skills in both lists are resolved by keeping the skill in `must_have_skills` and pruning it from `preferred_skills`.
+2. **Explicit Dealbreakers & Required Candidate Fields**:
+   - `dealbreakers` records hard geographic, authorization, or work mode mandates.
+   - `required_fields` contains candidate fields (such as notice period or portfolio) only when explicitly demanded by the recruiter/JD.
+3. **Ambiguities & Surfacing**:
+   - Subjective phrases ("strong communication", "rockstar attitude") or contradictory statements ("junior role requiring 8 years") are placed in `unknown_or_needs_confirmation`. They are never converted into hard filters.
+4. **Numeric Experience Bounds**:
+   - `min_experience_years` and `max_experience_years` are parsed only when explicit numeric figures are stated. Vague phrases like "experienced" leave these fields `None`.
+5. **Exact Preservation of Raw Text**:
+   - `raw_jd` always contains the exact input text provided by the caller.
+
+### Sample Validated Output
+```json
+{
+  "title": "Senior Backend Engineer",
+  "seniority": "Senior",
+  "min_experience_years": 5.0,
+  "max_experience_years": null,
+  "locations": ["San Francisco, CA"],
+  "work_modes": ["hybrid"],
+  "must_have_skills": ["Python", "PostgreSQL", "Docker"],
+  "preferred_skills": ["Kubernetes", "GraphQL"],
+  "mandatory_qualifications": [],
+  "preferred_qualifications": [],
+  "required_fields": [],
+  "dealbreakers": [],
+  "unknown_or_needs_confirmation": [],
+  "raw_jd": "Role: Senior Backend Engineer\n..."
+}
+```
