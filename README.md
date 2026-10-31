@@ -31,8 +31,9 @@ For a 20-card deck, adjacent-fit candidates are capped at four (20%). This is a 
 
 | Layer | Choice | Responsibility |
 |---|---|---|
-| Frontend | Next.js, React, TypeScript | Shared candidate and recruiter application |
-| Candidate client | Installable mobile-first PWA | Profile onboarding and candidate interest responses |
+| Frontend builder | **Lovable** (frontend only) | Generates the web app and mobile app UI; calls the FastAPI backend via REST. Lovable's own backend (Supabase) is NOT used |
+| Frontend | React, TypeScript, Tailwind (Lovable output) | Shared candidate and recruiter application |
+| Candidate client | Installable mobile-first PWA / mobile app (Lovable) | Profile onboarding and candidate interest responses |
 | Recruiter client | Desktop web dashboard | Company, job, discovery, and swipe deck |
 | Backend | FastAPI / Python | API routes, orchestration, data services |
 | Database | SQLite + SQLAlchemy (prototype) | Users, persons, companies, jobs, matches, actions |

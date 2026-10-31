@@ -29,6 +29,7 @@ These decisions were explicitly selected by the team and should be treated as fi
 | Career information | Use Crustdata-enriched profile data; do not claim independent verification |
 | Candidate response | Required for mutual matching |
 | Frontend | Mobile-first installable PWA for candidates + desktop web recruiter dashboard; shared frontend codebase |
+| Frontend tooling | Lovable builds the web app and mobile app (frontend only). All data, auth-less demo logic, Crustdata and Claude calls stay in the FastAPI backend; Lovable/Supabase backend is not used |
 | LLM provider | Anthropic Claude API |
 | Prototype persistence | SQLite / SQLAlchemy is the proposed MVP default |
 

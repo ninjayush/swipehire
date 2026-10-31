@@ -59,7 +59,8 @@ You may adjust routing/layout if useful, but keep candidate and recruiter routes
 
 ## 3. Technology and UI rules
 
-- Next.js + React + TypeScript.
+- **Lovable is the frontend builder (web app + mobile app). Frontend only: do not enable Supabase or any Lovable-hosted backend; all calls go to the FastAPI backend via `API_BASE_URL`.** Lovable output is React + TypeScript + Tailwind (Vite), so Next.js-specific structure/env names in this file (`app/` routes, `NEXT_PUBLIC_API_BASE_URL`) map to Lovable equivalents (react-router routes, `VITE_API_BASE_URL`).
+- React + TypeScript (Lovable-generated).
 - Tailwind CSS.
 - Mobile-first responsive layout for candidate PWA.
 - Desktop-first recruiter dashboard.

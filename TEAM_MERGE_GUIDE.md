@@ -2,13 +2,13 @@
 
 This guide is shared coordination material for the three workstreams. Each person must also read the corresponding individual assignment file.
 
-* [ ] Workstream ownership
+## Workstream ownership
 
-| Person                   | Branch                        | Owns                                                                                                               | Must not modify                                                         |
-| ------------------------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| 1 — Backend + Crustdata | `work/person-1-backend`     | `backend/app/api/`, `integrations/`, `models/`, `database/`, core services, backend root, `.env.example` | `frontend/`, `backend/app/ai/`, `backend/app/matching/`           |
-| 2 — AI + Matching       | `work/person-2-ai-matching` | `backend/app/ai/`, `backend/app/matching/`, matching tests                                                     | API routes, shared schemas/models, integrations, frontend, requirements |
-| 3 — Frontend            | `work/person-3-frontend`    | `frontend/`                                                                                                      | All backend files and root shared docs                                  |
+| Person | Branch | Owns | Must not modify |
+|---|---|---|---|
+| 1 — Backend + Crustdata | `work/person-1-backend` | `backend/app/api/`, `integrations/`, `models/`, `database/`, core services, backend root, `.env.example` | `frontend/`, `backend/app/ai/`, `backend/app/matching/` |
+| 2 — AI + Matching | `work/person-2-ai-matching` | `backend/app/ai/`, `backend/app/matching/`, matching tests | API routes, shared schemas/models, integrations, frontend, requirements |
+| 3 — Frontend | `work/person-3-frontend` | `frontend/` | All backend files and root shared docs |
 
 All three branches start from the same base commit containing `context.md`, `to-do.md`, and `README.md`.
 
@@ -86,14 +86,14 @@ The final integration is not complete until this exact path succeeds:
 
 ## Shared conventions
 
-* Python package root: `backend/app/`; import paths should consistently use `app...` when launched from `backend/`.
-* Frontend uses one `NEXT_PUBLIC_API_BASE_URL`; no direct Crustdata calls from browser.
-* JSON fields use `snake_case` in backend responses and types reflect this exactly. UI can display human-readable labels.
-* IDs are strings in frontend DTOs; preserve numeric `crustdata_person_id` separately when returned.
-* `origin`: `registered` or `crustdata_sourced`.
-* `membership_status`: `registered` or `not_registered`.
-* `fit_type`: `direct` or `adjacent`.
-* Recruiter actions: `shortlist`, `pass`, `save`.
-* Interest response: `accept`, `reject`.
-* No external outreach or contact with real people during hackathon demo.
-* Never commit `.env`, API keys, actual resumes, or unnecessary personal information.
+- Python package root: `backend/app/`; import paths should consistently use `app...` when launched from `backend/`.
+- Frontend uses one `NEXT_PUBLIC_API_BASE_URL`; no direct Crustdata calls from browser.
+- JSON fields use `snake_case` in backend responses and types reflect this exactly. UI can display human-readable labels.
+- IDs are strings in frontend DTOs; preserve numeric `crustdata_person_id` separately when returned.
+- `origin`: `registered` or `crustdata_sourced`.
+- `membership_status`: `registered` or `not_registered`.
+- `fit_type`: `direct` or `adjacent`.
+- Recruiter actions: `shortlist`, `pass`, `save`.
+- Interest response: `accept`, `reject`.
+- No external outreach or contact with real people during hackathon demo.
+- Never commit `.env`, API keys, actual resumes, or unnecessary personal information.
