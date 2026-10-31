@@ -62,7 +62,7 @@ anthropic>=0.40.0
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes (for AI parsing) | *None* | Authentication key for Claude Messages API. |
-| `ANTHROPIC_MODEL` | No | `claude-3-5-sonnet-20241022` | Configurable model for JD/resume parsing and explanation polishing. |
+| `ANTHROPIC_MODEL` | No | `claude-sonnet-5-5` | Configurable model for JD/resume parsing and explanation polishing. |
 | `ANTHROPIC_TIMEOUT` | No | `30.0` | Finite timeout (seconds) for synchronous API requests. |
 
 *Note: If `ANTHROPIC_API_KEY` is not configured, `build_candidate_deck` will still function 100% deterministically using the built-in evidence-grounded template fallback.*

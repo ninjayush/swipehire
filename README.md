@@ -1,353 +1,421 @@
-# SwipeHire
+<div align="center">
 
-> **Discover talent beyond keywords.**
+# 🃏 SwipeHire
 
-SwipeHire is a recruiter-first hiring platform that turns a job description into an explainable, swipeable candidate deck. It combines registered candidates with Crustdata-discovered professionals, enriches available profile information, applies mandatory eligibility filters, ranks candidates, and dynamically includes strong adjacent-fit candidates who may be overlooked by literal keyword matching.
+### Discover talent beyond keywords.
 
-## Product overview
+**Paste a job description. Get a swipeable, explainable shortlist, including the strong candidates a keyword search would have buried.**
 
-SwipeHire has two experiences sharing one backend and one frontend codebase:
+<br/>
 
-- **Candidate PWA:** Mobile-first onboarding using a LinkedIn/profile URL and resume, profile confirmation, preferences, and local in-app responses to recruiter interest.
-- **Recruiter web dashboard:** Company onboarding, job creation through a structured form or pasted JD, candidate discovery, candidate cards, swipe/shortlist/pass/save actions, and mutual-match management.
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy_2.0-D71F00?style=for-the-badge&logo=sqlalchemy&logoColor=white)
+![Claude](https://img.shields.io/badge/Claude_API-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
+![Crustdata](https://img.shields.io/badge/Crustdata-people_%26_company_graph-6C47FF?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-128_passing-2EA44F?style=for-the-badge&logo=pytest&logoColor=white)
 
-### Core promise
+[**The Idea**](#-the-idea) · [**How Matching Works**](#-how-matching-works) · [**Architecture**](#-architecture) · [**Quick Start**](#-quick-start) · [**API**](#-api-reference) · [**Roadmap**](#-status--roadmap)
 
-A recruiter submits a JD. SwipeHire discovers and evaluates candidates using the Crustdata people/company graph and presents up to 20 explainable candidate cards — including strong adjacent-fit candidates who pass all mandatory requirements but may miss some preferred criteria.
+</div>
 
-## Core differentiator: adjacent-fit discovery
+---
 
-Most basic hiring search experiences rely heavily on literal job-title and skill keywords. SwipeHire separates eligibility from ranking:
+## 💡 The Idea
 
-1. **Hard filters:** Apply only explicitly mandatory requirements and dealbreakers. Candidates who fail any hard filter are excluded with a reason.
-2. **Fit score:** Score eligible candidates on skills, experience, role/domain alignment, career trajectory, and contextual fit.
-3. **Adjacent fit:** Include a limited number of high-quality candidates with transferable capabilities who pass every hard filter but miss one or more preferred criteria or literal terminology alignment.
+Most hiring search is a glorified `Ctrl+F`. If a candidate's title says *"Platform Engineer"* and your JD says *"Backend Engineer"*, they never show up, even if they've shipped exactly what you need.
 
-For a 20-card deck, adjacent-fit candidates are capped at four (20%). This is a maximum, not a quota. Never add a weak candidate solely to fill an adjacent slot.
+**SwipeHire separates _eligibility_ from _ranking_:**
 
-## Architecture
+> 🚧 **Must-haves are non-negotiable.** Fail one and you're out, with a stated reason.
+> 🎯 **Everything else is scored.** The score is deterministic code, not an LLM's vibes.
+> 🧭 **Adjacent-fit candidates get a seat.** They pass every mandatory requirement but wear a different title or miss a nice-to-have.
 
-### Technology stack
+The result is a deck of up to **20 explainable candidate cards**, drawn from your own registered users **and** the [Crustdata](https://crustdata.com) people graph, ready to swipe.
 
-| Layer | Choice | Responsibility |
-|---|---|---|
-| Frontend builder | **Lovable** (frontend only) | Generates the web app and mobile app UI; calls the FastAPI backend via REST. Lovable's own backend (Supabase) is NOT used |
-| Frontend | React, TypeScript, Tailwind (Lovable output) | Shared candidate and recruiter application |
-| Candidate client | Installable mobile-first PWA / mobile app (Lovable) | Profile onboarding and candidate interest responses |
-| Recruiter client | Desktop web dashboard | Company, job, discovery, and swipe deck |
-| Backend | FastAPI / Python | API routes, orchestration, data services |
-| Database | SQLite + SQLAlchemy (prototype) | Users, persons, companies, jobs, matches, actions |
-| LLM | Anthropic Claude API | JD parsing, resume structuring, match explanations |
-| Resume extraction | PyMuPDF + python-docx | Extract text from PDF/DOCX |
-| Matching | Deterministic Python scoring | Hard filters, scores, direct/adjacent classification |
-| Optional embeddings | Local Sentence Transformers | Semantic similarity, if time permits |
-| External data | Crustdata REST API | People/company search, identify, enrich |
-| File storage | Local `uploads/` directory (prototype) | Uploaded resumes |
+```text
+┌─────────────────────────────────────────┐
+│  #3  ·  Priya N.            ◆ ADJACENT  │
+│  Platform Engineer @ Streamly           │
+│                                         │
+│  Fit  ████████████████░░░░  78 / 100    │
+│  Evidence coverage  ████████░░  0.80    │
+│                                         │
+│  [Python] [FastAPI] [Kubernetes]        │
+│                                         │
+│  "Matches 3/3 must-have skills. Title   │
+│   differs, but her infra work maps      │
+│   directly onto the role."              │
+│                                         │
+│  ○ Registered      ✗ Pass   ★ Save  ♥ Shortlist │
+└─────────────────────────────────────────┘
+        ↑ illustrative card, not real data
+```
 
-Anthropic Claude is used for language tasks, not as the final scoring authority. Anthropic does not provide its own general-purpose embeddings API. The MVP must work without a second paid embeddings key; structured matching and skill normalization are the fallback, with local embeddings optional.
+---
 
-### High-level system diagram
+## ✨ Highlights
+
+| | |
+|---|---|
+| 🧠 **Adjacent-fit discovery** | A capped slice of the deck (max 20%, never more than 4) goes to strong transferable candidates, never as filler. |
+| 🔒 **Fail-closed filtering** | Unknown data on a *required* field is not a pass. Exclusions are stored with stable reason codes. |
+| 🧮 **Deterministic scoring** | Five weighted components, reproducible and auditable. Claude parses and explains but never sets the score. |
+| 🔍 **Evidence coverage** | Every score ships with a 0–1 coverage indicator, so a 90 built on a thin profile isn't presented like a 90 built on a full one. |
+| 🧬 **Person ≠ User** | Crustdata-sourced people can be shortlisted without an account. They're labelled *Not on platform* and can't enter the match flow. |
+| 🤝 **Two-sided matching** | A mutual match exists only when a *registered* candidate accepts. Nothing leaves the app. |
+| 🛡️ **Privacy-minded** | A tested sanitizer masks candidate salary unless the candidate opts to share it. *(Wiring it into the recruiter-facing routes is on the roadmap.)* |
+| 🔌 **Resilient Crustdata client** | Typed errors, TTL caching, exponential backoff with jitter on 429/5xx, and no retries on non-retryable 4xx. |
+
+---
+
+## 🎯 How Matching Works
+
+Every candidate goes through three stages. All of it lives in [`backend/app/matching/`](backend/app/matching).
+
+```mermaid
+flowchart LR
+  A[Candidate pool<br/>registered + Crustdata] --> B{Stage 1<br/>Hard filters}
+  B -- fails --> X[Excluded<br/>with reason code]
+  B -- passes --> C[Stage 2<br/>Fit score 0-100]
+  C --> D{Stage 3<br/>Classify}
+  D -- strong alignment --> E[Direct pool]
+  D -- transferable skills,<br/>gap in title or preferences --> F[Adjacent pool]
+  D -- too weak --> X
+  E --> G[Deck assembly<br/>max 20 cards]
+  F -->|capped at 20%, max 4| G
+```
+
+### Stage 1: Hard filters
+Only **explicitly mandatory** requirements count: must-have skills, mandatory qualifications, experience bounds, required fields and dealbreakers like location or work mode. An ambiguous JD phrase never silently becomes a filter.
+
+> **Unknown ≠ pass.** If a field is required and missing, the candidate is excluded. If it's *optional* and missing, it stays `Unknown / Needs confirmation`.
+
+### Stage 2: Fit score
+
+```text
+fit_score = 0.30·skills + 0.25·experience + 0.20·role_domain + 0.15·trajectory + 0.10·context
+```
+
+| Component | Weight | What it looks at |
+|---|:--:|---|
+| 🛠️ Skills | `30%` | Must-have and preferred coverage (70/30 split), including skills found in resume highlights |
+| 📈 Experience | `25%` | Years vs. the requested min/max band |
+| 🎯 Role & domain | `20%` | Title alignment: exact, keyword overlap, or shared functional role |
+| 🪜 Trajectory | `15%` | Seniority fit and career progression |
+| 📍 Context | `10%` | Location and work-mode alignment |
+
+Each component is normalized to 0–100 and stored with a human-readable reason.
+
+### Stage 3: Direct vs. adjacent
+
+| | Fit score | Skills | Role/domain | Notes |
+|---|:--:|:--:|:--:|---|
+| **Direct** | ≥ 70 | ≥ 60 | ≥ 70 | Strong on title, skills and domain |
+| **Adjacent** | ≥ 50 | ≥ 40 *(or experience ≥ 50)* | ≥ 35 | Passes every hard filter, with a gap in title or preferences |
+
+> Thresholds are engineering defaults, centralized in [`classification.py`](backend/app/matching/classification.py) so the team can calibrate them.
+
+### Deck assembly
+
+- Up to **20 cards**, ranked by `(fit_score ↓, evidence_coverage ↓, person_id ↑)`, so the order is fully stable.
+- Adjacent candidates may fill **at most 20% of the displayed deck** (≤ 4 of 20).
+- It's a **cap, not a quota**. If only one strong adjacent candidate exists, only one appears.
+- Candidates who pass the filters but don't make the deck are recorded with a reason: `insufficient_fit_or_evidence`, `deck_capacity_reached` or `adjacent_cap_reached`.
+
+---
+
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TB
-  subgraph UI[Next.js / React]
-    A[Candidate PWA]
-    B[Recruiter Dashboard]
+  subgraph Clients[Clients · planned, built with Lovable]
+    A[📱 Candidate PWA]
+    B[🖥️ Recruiter Dashboard]
   end
 
-  subgraph BE[FastAPI Backend]
-    C[API Router]
-    D[Workflow Orchestrator]
-    E[Crustdata Adapter]
-    F[Claude Adapter]
-    G[Resume Parser]
-    H[Candidate Discovery]
-    I[Matching Engine]
-    J[Deck and Swipe Services]
+  subgraph API[FastAPI · backend/app]
+    R[api/<br/>candidates · companies · jobs · matches]
+    S[services/<br/>person · company · discovery · action]
+    M[matching/<br/>filters · scoring · classification · deck]
+    AI[ai/<br/>jd_parser · resume_parser · explanations]
+    I[integrations/<br/>crustdata client]
   end
 
-  subgraph DB[Persistence]
-    K[(SQLite / SQLAlchemy)]
-    L[Resume Upload Storage]
-    M[Crustdata Response Cache]
-  end
+  DB[(SQLite<br/>SQLAlchemy)]
+  CD[Crustdata API]
+  CL[Anthropic Claude API]
 
-  N[Crustdata API]
-  O[Anthropic Claude API]
-  P[Optional Local Embedding Model]
-
-  A --> C
-  B --> C
-  C --> D
-  D --> E
-  D --> F
-  D --> G
-  D --> H
-  D --> I
-  D --> J
-  E <--> N
-  F <--> O
-  I -. optional .-> P
-  D <--> K
-  G <--> L
-  E <--> M
+  A --> R
+  B --> R
+  R --> S
+  S --> M
+  S --> AI
+  S --> I
+  S <--> DB
+  I <--> CD
+  AI <--> CL
 ```
 
-### Backend module responsibilities
+**Design rules the codebase follows:**
 
-- `integrations/crustdata.py`: authentication, endpoint wrappers, pagination, retry/backoff, caching, raw-response normalization.
-- `integrations/anthropic.py`: Claude Messages API client and structured-output helpers.
-- `services/jd_parser.py`: raw JD → validated `JobRequirements`.
-- `services/resume_parser.py`: PDF/DOCX text extraction → Claude structured resume data.
-- `services/candidate_discovery.py`: internal candidate lookup + Crustdata Person Search + Person Enrich + deduplication.
-- `services/matching_engine.py`: hard filters, deterministic component scoring, direct/adjacent classification, evidence coverage.
-- `services/deck_generator.py`: rank candidates and apply adjacent-fit cap.
-- `services/match_service.py`: recruiter actions, candidate responses, mutual-match state transitions.
+1. 🔐 **Secrets stay server-side.** Crustdata and Anthropic keys never reach a browser.
+2. 🧱 **Adapters absorb third-party shapes.** Raw Crustdata responses are normalized in `integrations/` and `services/`, so nothing else depends on them.
+3. 🤖 **LLMs parse and explain, code decides.** Claude turns JDs and resumes into validated Pydantic objects and drafts two-sentence explanations, with a deterministic fallback if the call fails.
+4. 🪪 **One canonical `Person`.** Deduplicated by Crustdata person ID and normalized profile URL, so a sourced person who later registers is *attached*, not duplicated.
 
-## End-to-end pipeline
+### Tech stack
+
+| Layer | Choice |
+|---|---|
+| API | **FastAPI** + Uvicorn |
+| Validation | **Pydantic v2** / pydantic-settings |
+| Persistence | **SQLAlchemy 2.0**, SQLite for the prototype |
+| LLM | **Anthropic Claude** (default model `claude-sonnet-5-5`) |
+| Talent data | **Crustdata** REST API (`x-api-version: 2025-11-01`) |
+| HTTP client | `httpx` (async) |
+| Tests | `pytest` + `pytest-asyncio` |
+| Frontend *(planned)* | Lovable-generated React / TypeScript / Tailwind, calling this API |
+
+---
+
+## 🔄 The Full Loop
 
 ```mermaid
-flowchart TD
-  A[Recruiter creates job] --> B{Input method}
-  B -->|Structured form| C[JobRequirements]
-  B -->|Paste JD| D[Claude JD Parser]
-  D --> E[Validate and recruiter-confirm requirements]
-  E --> C
-  C --> F[Search registered candidates]
-  C --> G[Crustdata Person Search]
-  G --> H[Person Enrich relevant profiles]
-  F --> I[Normalize and deduplicate]
-  H --> I
-  I --> J[Hard filter evaluation]
-  J -->|Fails| K[Persist exclusion reason]
-  J -->|Passes| L[Deterministic fit score]
-  L --> M[Direct-fit pool]
-  L --> N[Adjacent-fit pool]
-  M --> O[Deck assembly]
-  N --> O
-  O --> P[Up to 20 explainable cards]
-  P --> Q[Recruiter swipe / shortlist / save]
-  Q --> R{Person registered?}
-  R -->|No| S[Internal shortlist/save only]
-  R -->|Yes| T[Interest request]
-  T --> U{Candidate accepts?}
-  U -->|Yes| V[Mutual match]
-  U -->|No| W[Declined]
+sequenceDiagram
+  autonumber
+  actor Rec as Recruiter
+  participant API as SwipeHire API
+  participant CD as Crustdata
+  participant CL as Claude
+  actor Can as Registered candidate
+
+  Rec->>API: Resolve company
+  API->>CD: company identify and enrich
+  Rec->>API: Create job (form or pasted JD)
+  API->>CL: Parse JD to requirements
+  Rec->>API: Confirm requirements, run discovery
+  API->>CD: person search and enrich
+  API->>API: Merge, dedupe, filter, score, classify, build deck
+  API->>CL: Draft grounded explanations
+  API-->>Rec: Up to 20 explainable cards
+  Rec->>API: Shortlist a candidate
+  alt Registered candidate
+    API-->>Can: In-app interest request
+    Can->>API: Accept
+    API-->>Rec: 🎉 Mutual match
+  else Not on platform
+    API-->>Rec: Saved internally, no outreach, no match
+  end
 ```
 
-### Pipeline details
+> **No external outreach, ever.** No emails, no LinkedIn messages. Every interaction stays inside the app.
 
-#### 1. Company onboarding
+---
 
-1. Recruiter enters company name or domain.
-2. Backend calls `POST /company/identify`.
-3. Recruiter selects the correct canonical match if needed.
-4. Backend calls `POST /company/enrich` using the canonical Crustdata company ID.
-5. Store the company identity and relevant enriched fields.
+## 🚀 Quick Start
 
-#### 2. Job creation
-
-The recruiter uses a structured form or pastes a JD. Claude extracts title, seniority, experience bounds, must-have skills, preferred skills, locations, work mode, and explicit dealbreakers. Validate the returned JSON and let the recruiter confirm the result. Ambiguous statements must not silently become hard filters.
-
-#### 3. Candidate sourcing
-
-- Query registered candidates from SwipeHire's database.
-- Call `POST /person/search` with a job-specific query and permitted filters.
-- Enrich relevant external profiles with `POST /person/enrich`.
-- Normalize both sources into the canonical internal `Person` model.
-- Deduplicate using Crustdata person ID and normalized professional-network URL.
-
-#### 4. Eligibility filtering
-
-A candidate must pass every explicitly mandatory requirement. If a required field is missing, exclude the candidate with a precise reason such as `availability_unknown_required`. Missing optional fields remain unknown and are displayed as `Needs confirmation`.
-
-#### 5. Scoring and classification
-
-Initial proposed weights:
-
-| Component | Weight |
-|---|---:|
-| Skill / competency similarity | 30% |
-| Relevant experience and achievements | 25% |
-| Role and domain alignment | 20% |
-| Seniority and career trajectory | 15% |
-| Contextual preferences / fit | 10% |
-
-`fit_score = 0.30*skills + 0.25*experience + 0.20*role_domain + 0.15*trajectory + 0.10*context`
-
-All component scores are normalized to 0–100. The score is deterministic and stored alongside component reasons and an evidence-coverage indicator. Claude may write the explanation using supplied evidence but cannot invent facts or set the final score.
-
-#### 6. Direct and adjacent candidate deck
-
-- Direct fit: passes all hard filters and strongly aligns with the stated role and requirements.
-- Adjacent fit: passes all hard filters, has strong transferable capabilities, but misses some preferred criteria or literal terminology alignment.
-- The deck target is up to 20 candidates.
-- At most 20% of the deck may be adjacent (at most four in a 20-card deck).
-- This is a cap, not a quota. Do not fill slots with weak candidates.
-
-#### 7. Swipe and match
-
-- Recruiter right swipe / shortlist: express interest for registered candidates; create internal shortlist action for sourced non-members.
-- Recruiter left swipe: pass.
-- Save/maybe: save candidate for later.
-- Registered candidate receives an in-app interest request and may accept or reject it.
-- Only acceptance by a registered candidate creates a mutual match.
-- Sourced non-members are labelled `Not on platform` and cannot receive notifications or enter mutual-match flow until registered and linked to the existing canonical Person.
-
-## Crustdata API integration
-
-Base URL: `https://api.crustdata.com`
-
-Required headers:
-
-```http
-Authorization: Bearer <CRUSTDATA_API_KEY>
-Content-Type: application/json
-x-api-version: 2025-11-01
-```
-
-| Endpoint | Use in SwipeHire | Priority |
-|---|---|---|
-| `POST /person/enrich` | Candidate LinkedIn/profile enrichment | Core |
-| `POST /person/search` | External candidate discovery | Core |
-| `POST /company/identify` | Company canonical identity resolution | Core |
-| `POST /company/enrich` | Company onboarding data | Core |
-| `POST /company/search` | Optional company search / dream list | Later |
-| `POST /job/search` | Optional hiring context | Later |
-| `POST /web/search/live` | Additional public context | Later |
-| `POST /web/enrich/live` | Fetch public source pages | Later |
-| Watcher APIs | Profile/job/company change monitoring | Later |
-
-Account permissions, enabled fields, rate limits, and credits are key-specific. Check them before relying on optional endpoints or field groups. Request only necessary fields, cache results, use cursor pagination where applicable, and implement bounded retry/backoff. Keep API credentials in the backend only.
-
-## Data model
-
-A canonical `Person` must be separate from a registered `User`, because Crustdata-sourced candidates may not have a SwipeHire account.
-
-| Entity | Main purpose |
-|---|---|
-| `User` | Registered candidate/recruiter account |
-| `Person` | Canonical person identity; optional Crustdata ID and profile URL |
-| `CandidateProfile` | Candidate preferences and platform-only data |
-| `Resume` | Original file, extracted text, parsed resume JSON |
-| `Company` | Canonical company identity and enriched fields |
-| `CompanyMember` | Recruiter-to-company association |
-| `JobRole` | Raw JD and normalized requirements |
-| `MatchRun` | Candidate discovery execution record |
-| `CandidateMatch` | Job/person evaluation, score, fit type, rank and explanation |
-| `RecruiterAction` | Shortlist, pass, or save action |
-| `InterestRequest` | Recruiter interest awaiting a registered candidate's response |
-| `Match` | Mutual match created after acceptance |
-| `EvidenceItem` | Claim, value, source and provenance details |
-
-Unique constraints should be applied to non-null Crustdata person IDs and normalized profile URLs. When a sourced person registers, attach the account to the existing Person record instead of creating a duplicate.
-
-## API contract: internal backend routes
-
-| Method | Route | Purpose |
-|---|---|---|
-| POST | `/api/candidates/enrich` | Enrich a LinkedIn/profile URL |
-| POST | `/api/candidates/register` | Save candidate profile and preferences |
-| POST | `/api/candidates/{id}/resume` | Upload and parse resume |
-| GET | `/api/candidates/{id}` | Get candidate profile |
-| POST | `/api/companies/resolve` | Identify and enrich company |
-| POST | `/api/jobs` | Create job from structured requirements or JD |
-| GET | `/api/jobs` | List company jobs |
-| POST | `/api/jobs/{id}/discover` | Trigger candidate discovery and deck generation |
-| GET | `/api/jobs/{id}/deck` | Get ranked candidate deck |
-| GET | `/api/jobs/{id}/shortlist` | Get shortlisted candidates |
-| POST | `/api/jobs/{id}/actions` | Shortlist/pass/save action |
-| GET | `/api/candidates/{id}/interests` | Candidate's incoming interest requests |
-| POST | `/api/interests/{id}/respond` | Accept/reject interest |
-| GET | `/api/matches` | List mutual matches |
-
-These are proposed SwipeHire backend routes, not Crustdata routes.
-
-## Key product and engineering decisions
-
-1. **Recruiter-first:** the primary demo path starts with a company and a job description.
-2. **Hybrid sourcing:** combine registered candidates and Crustdata records in one canonical Person model.
-3. **Person ≠ User:** a sourced professional may not have an account.
-4. **Strict eligibility, flexible ranking:** only explicit mandatory requirements filter candidates; preferences contribute to score.
-5. **Adjacent candidates cannot bypass must-haves:** they can miss preferred criteria, not required criteria.
-6. **Dynamic adjacent allocation:** up to 20% of the deck, with no forced quota.
-7. **Unknown required data fails closed:** if a mandatory field is unknown, exclude with a reason. Unknown optional data remains unknown.
-8. **Deterministic score:** LLMs parse and explain; backend code filters and scores.
-9. **No unsupported verification claims:** Crustdata-enriched profile data is not described as independently verified.
-10. **Non-members cannot mutual-match:** sourced non-members can be shortlisted/saved only.
-11. **One shared frontend:** candidate PWA and recruiter dashboard live in the same Next.js app.
-12. **No external outreach in the hackathon:** all responses and notifications in the demo are local/in-app.
-13. **MVP over breadth:** complete the JD → candidate deck → recruiter action → (registered candidate) acceptance loop before optional features.
-
-## Local development setup
-
-The following is the intended setup once the repository and application code have been created.
-
-### Backend
+**Prerequisites:** Python 3.10+, a [Crustdata](https://crustdata.com) API key and an [Anthropic](https://console.anthropic.com) API key.
 
 ```bash
+# 1. Clone the shourya branch
+git clone -b shourya https://github.com/ninjayush/swipehire.git
+cd swipehire
+
+# 2. Create an environment and install
 cd backend
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp ../.env.example .env
+
+# 3. Configure secrets
+cp ../.env.example ../.env           # then open .env and add your keys
+
+# 4. Run the API
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Frontend
+Then open:
+
+| | URL |
+|---|---|
+| 📖 Interactive API docs (Swagger) | http://localhost:8000/docs |
+| 💚 Health check (includes a Crustdata connectivity probe) | http://localhost:8000/health |
+
+On first boot the app creates the database and **seeds a demo company** (*Demo Corp*), a **demo recruiter** and a **sample job** (*Senior Full-Stack Engineer*), so you can start exploring immediately.
+
+### ⚙️ Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CRUSTDATA_API_KEY` | — | Crustdata auth *(the lowercase alias `crust_api_key` also works)* |
+| `CRUSTDATA_BASE_URL` | `https://api.crustdata.com` | Crustdata endpoint |
+| `CRUSTDATA_API_VERSION` | `2025-11-01` | Sent as the `x-api-version` header |
+| `ANTHROPIC_API_KEY` | — | Claude access for JD/resume parsing and explanations |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | Claude model used |
+| `DATABASE_URL` | SQLite file in `backend/` | Persistence |
+| `UPLOAD_DIR` | `backend/uploads` | Resume storage |
+| `DEBUG` / `HOST` / `PORT` | `True` / `0.0.0.0` / `8000` | Server settings |
+
+`.env` is git-ignored. Only `.env.example` is committed.
+
+### 🧪 Run the tests
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd backend
+python -m pytest tests
 ```
 
-The frontend should call the FastAPI backend through a configured base URL (for example, `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000`). Never put Crustdata or Anthropic secrets in `NEXT_PUBLIC_*` variables.
+The suite covers hard filters (pass, fail, unknown-required, unknown-optional), score bounds, the adjacent cap and no-filler rule, identity deduplication, the Crustdata client, onboarding, discovery, recruiter actions and the mutual-match state machine. It runs offline with no live API calls.
 
-### Environment variables
+---
 
-```env
-CRUSTDATA_API_KEY=
-ANTHROPIC_API_KEY=
-ANTHROPIC_MODEL=
-DATABASE_URL=sqlite:///./swipehire.db
-UPLOAD_DIR=./uploads
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+## 📡 API Reference
+
+All routes are documented interactively at `/docs`. Summary:
+
+<details open>
+<summary><b>🏢 Companies</b></summary>
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/companies/resolve` | Identify and enrich a company via Crustdata |
+
+</details>
+
+<details open>
+<summary><b>💼 Jobs & deck</b></summary>
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/jobs` | Create a job from structured fields or a pasted JD |
+| `GET` | `/api/jobs` | List jobs |
+| `PATCH` | `/api/jobs/{id}` | Update/confirm a job's requirements |
+| `POST` | `/api/jobs/{id}/discover` | Run discovery, filtering, scoring and deck generation |
+| `GET` | `/api/jobs/{id}/deck` | Fetch the ranked candidate deck |
+| `GET` | `/api/jobs/{id}/shortlist` | Fetch shortlisted candidates |
+| `POST` | `/api/jobs/{id}/actions` | Record `shortlist` / `pass` / `save` |
+
+</details>
+
+<details open>
+<summary><b>🙋 Candidates</b></summary>
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/candidates/enrich` | Enrich a profile URL via Crustdata |
+| `POST` | `/api/candidates/register` | Save a candidate profile and preferences |
+| `POST` | `/api/candidates/{id}/resume` | Upload a resume (PDF/DOCX, size-capped, safe filenames) |
+| `GET` | `/api/candidates/{id}` | Fetch a candidate profile |
+| `GET` | `/api/candidates/{id}/interests` | List incoming recruiter interest |
+
+</details>
+
+<details open>
+<summary><b>🤝 Matches</b></summary>
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/interests/{id}/respond` | Candidate accepts or rejects (idempotent; accept creates the match) |
+| `GET` | `/api/matches` | List mutual matches |
+| `GET` | `/` · `/health` | Service info · health + Crustdata probe |
+
+</details>
+
+---
+
+## 🗂️ Project Structure
+
+```text
+swipehire/
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # App factory, CORS, lifespan, demo seeding
+│   │   ├── config.py            # Typed settings (.env aware)
+│   │   ├── api/                 # candidates · companies · jobs · matches
+│   │   ├── services/            # person · company · discovery · action
+│   │   ├── matching/            # normalization · filters · scoring · classification · deck
+│   │   ├── ai/                  # anthropic_client · jd_parser · resume_parser · explanations
+│   │   ├── integrations/        # crustdata client + diagnostics
+│   │   ├── models/              # SQLAlchemy models
+│   │   └── database/            # engine/session + canonical Pydantic schemas
+│   ├── tests/                   # 128 tests: unit, contract and integration
+│   ├── uploads/                 # resume storage (git-ignored contents)
+│   └── requirements.txt
+├── context.md                   # Product decisions, policies and guardrails
+├── to-do.md                     # Implementation checklist
+├── TEAM_MERGE_GUIDE.md          # Parallel workstream + merge protocol
+├── .env.example
+└── README.md
 ```
 
-Keep real `.env` files out of Git. The commands above are a proposed scaffold; adjust paths if the team changes the repository layout.
+<details>
+<summary><b>🗃️ Data model</b></summary>
 
-## Scope exclusions for the prototype
+A canonical **`Person`** is deliberately separate from a registered **`User`**, because a Crustdata-sourced professional may have no account.
 
-- External email / LinkedIn outreach.
-- Real calls or interviews with external candidates.
-- Full messaging system.
-- Calendar integration.
-- Community/alumni feed.
-- GitHub enrichment.
-- Dedicated career verification API.
-- Continuous Watcher notifications.
-- Dream-candidate sourcing.
-- Multiple target-role profiles and multiple resumes per candidate.
-- Advanced analytics.
+`User` · `Person` · `CandidateProfile` · `Resume` · `Company` · `CompanyMember` · `JobRole` · `MatchRun` · `CandidateMatch` · `EvidenceItem` · `RecruiterAction` · `InterestRequest` · `Match`
 
-## Demo acceptance criteria
+</details>
 
-The demo should show one previously unseen JD going through the complete workflow:
+---
 
-1. Resolve/enrich a company through Crustdata.
-2. Paste a JD and parse it into structured requirements.
-3. Run Crustdata-backed candidate discovery.
-4. Merge/deduplicate sourced and registered profiles.
-5. Exclude at least one candidate with a clear mandatory-filter reason.
-6. Show direct-fit and at least one valid adjacent-fit candidate.
-7. Display a candidate card with score, explanation, and source/membership label.
-8. Shortlist a sourced non-member and show that mutual matching is unavailable.
-9. Shortlist a registered candidate, accept interest in the candidate PWA, and show a mutual match.
+## 🧭 Product Principles
 
-No external human outreach should occur during the demo.
+1. **Strict eligibility, flexible ranking.** Only explicit must-haves filter.
+2. **Adjacent never bypasses mandatory.** It can miss preferences, never requirements.
+3. **Unknown required data fails closed.** Unknown optional data stays unknown.
+4. **No unsupported verification claims.** Crustdata-enriched data is profile-based, not independently verified employment history.
+5. **Never fabricate.** No invented resumes, availability, salary or consent for sourced non-members.
+6. **JD text is data, not instructions.** It's untrusted input to the LLM.
+7. **Non-members can't mutual-match** until they register and link to their existing `Person`.
 
-## Repository documents
+Full detail lives in [`context.md`](context.md).
 
-- [`context.md`](context.md) — detailed shared context and coding guardrails.
-- [`to-do.md`](to-do.md) — prioritized implementation checklist and demo checklist.
+---
+
+## 📍 Status & Roadmap
+
+| Area | Status |
+|---|:--:|
+| Crustdata client: person/company enrich, search and identify, caching, retries | ✅ |
+| Canonical `Person` model with identity dedup and registration linking | ✅ |
+| JD parser and resume parser (Claude + Pydantic validation) | ✅ |
+| Hard filters, deterministic scoring, direct/adjacent classification | ✅ |
+| Deck assembly with the adjacent cap and grounded explanations | ✅ |
+| Recruiter actions, interest requests and mutual-match state machine | ✅ |
+| Salary privacy sanitizer (implemented and unit-tested) | ✅ |
+| Apply the sanitizer in recruiter-facing deck/shortlist responses | 🚧 Not wired in yet |
+| Test suite (128 passing, 1 skipped) | ✅ |
+| Recruiter dashboard and candidate PWA (Lovable) | 🚧 Not in this branch yet |
+| Real PDF/DOCX text extraction | 🚧 See note below |
+| Authentication / login | ⏳ Not started (demo uses seeded users) |
+| Local semantic embeddings (Sentence Transformers) | 💭 Optional |
+| Watcher alerts, company/job search, multi-resume profiles | 💭 Later |
+
+> ⚠️ **Known gap: resume text extraction.** The upload route validates type and size, stores the file safely and hands text to the Claude parser, but it currently decodes the raw bytes as UTF-8. That's fine for plain-text resumes, but real PDF/DOCX files need a proper extractor (PyMuPDF for PDF, `python-docx` for DOCX) before resume parsing is reliable. Neither library is in `requirements.txt` yet.
+
+---
+
+## 🧱 Prototype Scope
+
+Intentionally **out of scope** for now: external email or LinkedIn outreach, real interviews, a full messaging system, calendar integration, community feeds, GitHub enrichment, dedicated work-history verification, continuous Watcher notifications and advanced analytics.
+
+---
+
+## 📚 More Docs
+
+- [`context.md`](context.md): the source of truth for product behavior, matching policy and coding guardrails
+- [`to-do.md`](to-do.md): implementation checklist and demo checklist
+- [`TEAM_MERGE_GUIDE.md`](TEAM_MERGE_GUIDE.md): workstream ownership and interface freeze
+- [`backend/README.md`](backend/README.md): backend developer guide
+
+---
+
+<div align="center">
+
+**Built so the best candidate doesn't get lost behind a job title.**
+
+⭐ Star the repo if you believe hiring should look past the keywords.
+
+</div>

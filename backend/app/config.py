@@ -23,7 +23,8 @@ class Settings(BaseSettings):
 
     # Anthropic LLM Configuration (Config only, owned by Person 2)
     ANTHROPIC_API_KEY: str = ""
-    ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20241022"
+    ANTHROPIC_MODEL: str = "claude-sonnet-5-5"
+    ANTHROPIC_TIMEOUT: float = 30.0
 
     # Database Configuration
     DATABASE_URL: str = f"sqlite:///{BASE_DIR / 'swipehire.db'}"

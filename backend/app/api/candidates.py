@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 import logging
@@ -121,7 +122,8 @@ async def upload_resume(id: str, file: UploadFile = File(...), db: Session = Dep
 
     if resume_parser:
         try:
-            parsed_json = resume_parser(text_content)
+            # Claude-backed and synchronous; run in a worker thread to avoid blocking the event loop.
+            parsed_json = await asyncio.to_thread(resume_parser, text_content)
         except Exception as e:
             logger.warning(f"Person 2 resume parser error: {e}")
             parsed_json = None
